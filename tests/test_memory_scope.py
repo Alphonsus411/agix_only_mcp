@@ -37,6 +37,27 @@ def test_sin_marcador_usa_la_global(tmp_path):
     assert scope.name == "global" and scope.data_dir == tmp_path / "home"
 
 
+def test_modo_estricto_sin_marcador_desactiva_memoria(tmp_path):
+    env = _env(tmp_path, AGIX_MCP_REQUIRE_SCOPE="1")
+    scope = memory_scope.resolve(_project(tmp_path), env)
+    assert not scope.enabled
+    assert scope.name == "off"
+    assert scope.source == "AGIX_MCP_REQUIRE_SCOPE"
+
+
+def test_modo_estricto_respeta_proyecto_explicito(tmp_path):
+    env = _env(tmp_path, AGIX_MCP_REQUIRE_SCOPE="true")
+    scope = memory_scope.resolve(_project(tmp_path, "cliente-x"), env)
+    assert scope.enabled
+    assert scope.name == "cliente-x"
+
+
+def test_modo_estricto_respeta_off_y_global_explicitos(tmp_path):
+    env = _env(tmp_path, AGIX_MCP_REQUIRE_SCOPE="yes")
+    assert not memory_scope.resolve(_project(tmp_path, "off"), env).enabled
+    assert memory_scope.resolve(_project(tmp_path, "global"), env).name == "global"
+
+
 def test_marcador_con_nombre_desde_una_subcarpeta(tmp_path):
     project = _project(tmp_path, "cliente-x")
     scope = memory_scope.resolve(project / "src" / "sub", _env(tmp_path))
