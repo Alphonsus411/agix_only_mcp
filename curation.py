@@ -93,9 +93,23 @@ def is_obsolete(cur: dict, entry_id: str) -> bool:
 
 
 def repeats(cur: dict, entry_id: str) -> int:
-    """Veces que cuenta una entrada: ella más las fusionadas en ella (también en cadena)."""
-    children = [i for i, info in cur["retired"].items() if info.get("merged_into") == entry_id]
-    return 1 + sum(repeats(cur, c) for c in children)
+    """Cuenta fusiones transitivas sin recursión infinita ante ciclos o datos corruptos."""
+    count = 0
+    seen: set[str] = set()
+    pending = [entry_id]
+    retired = cur.get("retired", {})
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        count += 1
+        pending.extend(
+            item for item, info in retired.items()
+            if isinstance(info, dict) and info.get("merged_into") == current
+            and item not in seen
+        )
+    return count
 
 
 def lesson(cur: dict, entry_id: str, original):
