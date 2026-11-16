@@ -4,7 +4,8 @@ Uso (lo invoca Claude Code; recibe el JSON del evento por stdin):
     python agix_context.py session   # SessionStart: resumen de identidad, estado y lecciones
     python agix_context.py prompt    # UserPromptSubmit: recuerdos relacionados con el prompt
 
-Solo LEE los ficheros de datos del servidor (AGIX_MCP_DATA o ~/.agix-mcp); no importa agix,
+Solo LEE los ficheros de datos del servidor, de la memoria que corresponde al proyecto de la
+sesión (memory_scope.py: .agix.json, AGIX_MCP_DATA o ~/.agix-mcp); no importa agix,
 así que es rápido y no interfiere con el servidor MCP en marcha. Si no hay nada útil que
 decir, no imprime nada. Cualquier error se silencia: un hook de contexto nunca debe
 bloquear una sesión ni un prompt.
@@ -20,7 +21,12 @@ import unicodedata
 from collections import Counter
 from pathlib import Path
 
-DATA_DIR = Path(os.environ.get("AGIX_MCP_DATA", Path.home() / ".agix-mcp"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import memory_scope  # noqa: E402
+
+# Se fija en main() según el proyecto de la sesión (cwd del evento); por defecto, la global.
+DATA_DIR = Path(os.environ.get("AGIX_MCP_DATA") or memory_scope.base_dir())
+SCOPE: memory_scope.Scope | None = None
 MAX_CHARS = 1500
 STOPWORDS = {
     "para", "pero", "como", "esto", "esta", "este", "estos", "estas", "porque", "cuando", "donde",
@@ -153,7 +159,10 @@ def session_context() -> str:
 
     if not lines:
         return ""
-    return _wrap("Contexto persistente de AGIX (MCP agix)", lines)
+    title = "Contexto persistente de AGIX (MCP agix)"
+    if SCOPE is not None and SCOPE.name not in ("global", "AGIX_MCP_DATA"):
+        title += f" — memoria del proyecto «{SCOPE.name}»"
+    return _wrap(title, lines)
 
 
 # --------------------------------------------------------------------------- UserPromptSubmit
@@ -210,6 +219,20 @@ def main(argv: list[str]) -> int:
         payload = json.loads(sys.stdin.read() or "{}")
     except ValueError:
         payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    global DATA_DIR, SCOPE
+    try:
+        SCOPE = memory_scope.resolve(payload.get("cwd") or None)
+    except Exception:
+        return 0
+    if not SCOPE.enabled:
+        # Memoria desactivada: no se lee nada; al empezar solo se avisa de ello.
+        if mode == "session":
+            _emit("SessionStart", f"Memoria de AGIX: {SCOPE.describe()}. Lo que se registre con "
+                                  "agix_*_record se pierde al cerrar la sesión.")
+        return 0
+    DATA_DIR = SCOPE.data_dir
     try:
         if mode == "session":
             text, event = session_context(), "SessionStart"
@@ -220,10 +243,14 @@ def main(argv: list[str]) -> int:
     except Exception:
         return 0
     if text:
-        out = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
-        sys.stdout.reconfigure(encoding="utf-8")
-        print(json.dumps(out, ensure_ascii=False))
+        _emit(event, text)
     return 0
+
+
+def _emit(event: str, text: str) -> None:
+    out = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
+    sys.stdout.reconfigure(encoding="utf-8")
+    print(json.dumps(out, ensure_ascii=False))
 
 
 if __name__ == "__main__":

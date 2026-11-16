@@ -10,10 +10,33 @@ python -m venv .venv
 claude mcp add --scope user agix -e PYTHONIOENCODING=utf-8 -- "%CD%\.venv\Scripts\python.exe" "%CD%\server.py"
 ```
 
-Datos persistentes en `%USERPROFILE%\.agix-mcp` (cambiable con `AGIX_MCP_DATA`):
+Datos persistentes en `%USERPROFILE%\.agix-mcp` (o la memoria del proyecto, ver
+[Memoria por proyecto](#memoria-por-proyecto); cambiable con `AGIX_MCP_DATA`):
 `memoria.json` (experiencias), `ontologia.json` (conceptos), `qualia_config.json`,
 `qualia_estado.json` + `qualia_modelos.json` (espíritu Qualia y sus pesos aprendidos), `suenos.json`
 `autonarrativa.db` + `autonarrativa_scores.json`, `metacognicion.json` e `identidad.json`.
+
+## Memoria por proyecto
+
+Por defecto todas las sesiones comparten la memoria global (`~/.agix-mcp`). Para que un proyecto
+(p. ej. el de un cliente) no lea ni escriba en ella, pon un `.agix.json` en su carpeta raíz:
+
+| `.agix.json` | Memoria |
+|---|---|
+| `{"memoria": "cliente-x"}` | propia, en `~/.agix-mcp/proyectos/cliente-x` (minúsculas, números, `-` y `_`) |
+| `{"memoria": "global"}` | la global (útil para anular un `.agix.json` de una carpeta superior) |
+| `{"memoria": "off"}` | ninguna: no se lee nada y lo que se registre se pierde al cerrar la sesión |
+| sin archivo | la global |
+
+- Vale para el proyecto y todas sus subcarpetas (se busca hacia arriba desde la carpeta de la
+  sesión). Un `.agix.json` roto o con un nombre no válido desactiva la memoria en vez de caer en
+  la global: ante la duda, no se mezcla.
+- Lo aplican a la vez el servidor (al arrancar, según la carpeta de la sesión) y los hooks (según el
+  `cwd` del evento), con la misma lógica (`memory_scope.py`). `agix_memory_scope` dice qué memoria
+  está activa y por qué; el resumen de inicio indica la memoria del proyecto o que está desactivada.
+- `AGIX_MCP_DATA` fija la carpeta a mano y manda sobre todo; `AGIX_MCP_HOME` cambia la base.
+- Las lecciones generales (p. ej. de git o PowerShell) no pasan de una memoria a otra: si las
+  quieres en un proyecto con memoria propia, regístralas también allí.
 
 ## Hooks y skill (uso automático)
 

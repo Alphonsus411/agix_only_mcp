@@ -3,7 +3,8 @@
 Transporte: stdio. Nada debe escribirse en stdout salvo el protocolo MCP, por eso
 el logging va a stderr y cada llamada a AGIX se envuelve en redirect_stdout.
 
-Estado persistente en AGIX_MCP_DATA (por defecto ~/.agix-mcp):
+Estado persistente en la carpeta que elige memory_scope.py (por defecto ~/.agix-mcp; por
+proyecto con un .agix.json; AGIX_MCP_DATA la fija a mano):
   memoria.json   experiencias registradas (GestorDeMemoria)
   ontologia.json conceptos, atributos y relaciones (Ontology)
 """
@@ -26,7 +27,21 @@ logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 log = logging.getLogger("agix-mcp")
 
-DATA_DIR = Path(os.environ.get("AGIX_MCP_DATA", Path.home() / ".agix-mcp")).resolve()
+# Memoria por proyecto (memory_scope.py): se decide con la carpeta desde la que Claude Code
+# lanza el servidor, antes del chdir. Con la memoria desactivada (.agix.json {"memoria": "off"})
+# se usa una carpeta temporal que se borra al salir: nada se lee ni se conserva.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import memory_scope  # noqa: E402
+
+START_DIR = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+SCOPE = memory_scope.resolve(START_DIR)
+if SCOPE.enabled:
+    DATA_DIR = SCOPE.data_dir.resolve()
+else:
+    import tempfile
+
+    _TMP = tempfile.TemporaryDirectory(prefix="agix-off-", ignore_cleanup_errors=True)
+    DATA_DIR = Path(_TMP.name).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 # GestorDeMemoria solo acepta rutas dentro del cwd.
 os.chdir(DATA_DIR)
@@ -101,7 +116,12 @@ Herramientas de AGIX (framework de Adolfo González) para apoyar el razonamiento
   banco de sueños persistente.
 - agix_fagi_index, agix_harmony, agix_simulate_agent: métricas y simulación de agentes.
 Las puntuaciones éticas/afectivas son heurísticas: tómalas como una segunda opinión, no como verdad.
+- agix_memory_scope: qué memoria usa este proyecto (global, propia del proyecto o desactivada).
 """
+INSTRUCTIONS += f"Memoria activa en esta sesión: {SCOPE.describe()}."
+if not SCOPE.enabled:
+    INSTRUCTIONS += (" Lo que registres se pierde al cerrar la sesión: no uses agix_*_record"
+                     " salvo que el usuario lo pida.")
 
 server = MCPServer(name="agix", version="1.0.0", instructions=INSTRUCTIONS)
 
@@ -587,6 +607,25 @@ def agix_logic_infer(
         if qneg:
             result["holds"] = not answers
     return result
+
+
+@server.tool()
+def agix_memory_scope() -> dict:
+    """Qué memoria de AGIX usa esta sesión y por qué.
+
+    Cada proyecto puede tener memoria propia con un archivo .agix.json en su carpeta (o en una
+    superior): {"memoria": "nombre"} usa ~/.agix-mcp/proyectos/nombre, {"memoria": "global"} la
+    global y {"memoria": "off"} ninguna. Sin archivo, la global. AGIX_MCP_DATA manda sobre todo.
+    """
+    return {
+        "memory": SCOPE.name,
+        "description": SCOPE.describe(),
+        "persistent": SCOPE.enabled,
+        "data_dir": str(DATA_DIR) if SCOPE.enabled else None,
+        "decided_by": SCOPE.source,
+        "problem": SCOPE.problem,
+        "project_dir": START_DIR,
+    }
 
 
 # Límites de agix_verify_expression: el verificador de AGIX prueba 3^n asignaciones y calcula
