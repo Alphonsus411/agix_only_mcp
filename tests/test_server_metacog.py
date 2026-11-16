@@ -46,6 +46,28 @@ def test_revision_con_lecciones_reales_y_errores_repetidos(server):
     assert r["by_goal"]["calidad"]["success_rate"] == 1.0
 
 
+def test_revision_tono_proporcional_aunque_el_primer_registro_sea_un_error(server):
+    # Caso real: 1 error primero y 4 aciertos daba "frustracion"
+    server.agix_decision_record("editar settings.json", False,
+                                lesson="la regla de deny lo bloqueó, y era lo correcto")
+    for a in ("instalador", "corregir plasticidad", "histéresis", "revisar Qualia"):
+        server.agix_decision_record(a, True)
+    r = server.agix_decision_review()
+    assert (r["successes"], r["errors"]) == (4, 1)
+    assert r["emotional_tone"] == "satisfaccion"
+    assert r["lessons"] == ["'editar settings.json': la regla de deny lo bloqueó, y era lo correcto"]
+
+
+def test_revision_tono_frustracion_y_ambivalencia(server):
+    server.agix_decision_record("a", True)
+    server.agix_decision_record("b", False)
+    assert server.agix_decision_review(store_in_narrative=False)["emotional_tone"] == "ambivalencia"
+    server.agix_decision_record("c", False)
+    r = server.agix_decision_review(store_in_narrative=False)
+    assert r["emotional_tone"] == "frustracion"
+    assert "Mejorar acción 'c'" in r["lessons"]  # sin lección registrada: mensaje genérico
+
+
 def test_revision_se_guarda_en_la_autonarrativa(server):
     _decisiones(server)
     antes = server.agix_narrative_self()["experiences"]

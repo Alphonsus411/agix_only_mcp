@@ -417,3 +417,60 @@ index 23b00a6..4df6d78 100644
          }
  
          self._emit("after_reflection", resultado)
+diff --git a/src/agix/metacognition/decision_reviewer.py b/src/agix/metacognition/decision_reviewer.py
+index 7e3873d..53be826 100644
+--- a/src/agix/metacognition/decision_reviewer.py
++++ b/src/agix/metacognition/decision_reviewer.py
+@@ -33,11 +33,32 @@ class DecisionReviewer:
+             coherente = self.logic._es_coherente(evento)  # criterio de ReflexiveLogic
+             if coherente:
+                 successes += 1
+-                self.emotions.sentir("satisfaccion", 0.7)
+             else:
+                 errors += 1
+-                self.emotions.sentir("frustracion", 0.7)
+-                lessons.append(f"Mejorar acción '{evento.get('accion')}'")
++                # Corrección local: usar la lección registrada si la hay (antes siempre
++                # "Mejorar acción ...", aunque la lección dijera que el fallo fue lo correcto)
++                resultado = evento.get("resultado")
++                leccion = resultado.get("leccion") if isinstance(resultado, dict) else None
++                if leccion:
++                    lessons.append(f"'{evento.get('accion')}': {leccion}")
++                else:
++                    lessons.append(f"Mejorar acción '{evento.get('accion')}'")
++
++        # Corrección local: el tono es proporcional a aciertos y errores. Antes se sentía 0.7
++        # de cada emoción por decisión; ambas acababan en 0.7 y el empate lo ganaba la primera
++        # en llegar ("frustracion" con 4 aciertos de 5 si la primera decisión fue un error).
++        total = successes + errors
++        if total:
++            if successes:
++                self.emotions.sentir("satisfaccion", successes / total)
++            if errors:
++                self.emotions.sentir("frustracion", errors / total)
++        if successes > errors:
++            tono = "satisfaccion"
++        elif errors > successes:
++            tono = "frustracion"
++        else:
++            tono = "ambivalencia" if total else "neutral"
+ 
+         resumen = (
+             f"Revisión de {len(registros)} decisiones: {successes} aciertos, {errors} errores."
+@@ -51,7 +72,7 @@ class DecisionReviewer:
+                 "successes": successes,
+                 "errors": errors,
+                 "lessons": lessons,
+-                "tone": self.emotions.tono_general(),
++                "tone": tono,
+             },
+         )
+         self.autonarrative.store_experience(experiencia)
+@@ -60,6 +81,6 @@ class DecisionReviewer:
+             "successes": successes,
+             "errors": errors,
+             "lessons": lessons,
+-            "emotional_tone": self.emotions.tono_general(),
++            "emotional_tone": tono,
+             "summary": resumen,
+         }

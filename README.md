@@ -89,6 +89,10 @@ Tests: `.venv\Scripts\python -m pytest tests -q`.
 - `qualia/spirit.py`: el diario guarda la carga recibida, no la ya modulada por la plasticidad (0.7 → 0.6749).
 - `qualia/spirit.py`: la RNN aprende el cambio entre estados y predice actual + cambio (antes predecía
   valores absolutos que se quedaban en ~0.00–0.04); `predecir_futuro` ya no altera el estado oculto.
+- `metacognition/decision_reviewer.py`: el tono de la revisión es proporcional a aciertos y errores
+  (antes ambas emociones acababan en 0.7 y el empate lo ganaba la primera decisión: "frustracion" con
+  4/5 aciertos), con "ambivalencia" si empatan; las lecciones usan la registrada en vez de un
+  "Mejorar acción ..." genérico.
 
 ## Notas sobre AGIX 1.11.0 detectadas al integrarlo
 
