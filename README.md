@@ -217,3 +217,7 @@ como UTC y convierte a UTC los sueños antiguos (hora local de esta máquina), p
 En equipos compartidos o corporativos se puede definir `AGIX_MCP_REQUIRE_SCOPE=1` en el entorno del servidor MCP **y** de los hooks de Claude Code. Con esta opción, cuando no existe un archivo `.agix.json` válido en el directorio del proyecto o sus ancestros, la memoria persistente queda desactivada en lugar de usar la global. Para habilitar memoria por proyecto, crear `.agix.json` con `{"memoria":"nombre-proyecto"}`; `{"memoria":"global"}` permite expresamente la memoria compartida y `{"memoria":"off"}` la desactiva.
 
 **Importante:** `AGIX_MCP_DATA` tiene prioridad y fuerza la ruta indicada incluso en modo estricto. Revisar esta variable antes de activar el aislamiento. Los procesos MCP y hooks deben recibir la misma configuración de entorno. Reiniciar los clientes MCP tras cambiar variables o código. Hacer copia de seguridad de la memoria antes de actualizar; no copiar información confidencial de clientes a memorias personales.
+
+### Protección de contexto en hooks
+
+Los hooks `SessionStart` y `UserPromptSubmit` aplican una redacción **de mejores esfuerzos** a algunos formatos habituales de credenciales antes de entregar recuerdos al modelo. No es un filtro DLP ni una defensa completa frente a prompt injection. Los datos originales permanecen en el almacenamiento local: evitar registrar secretos desde el origen, revisar permisos del directorio de memoria y no confiar en la redacción para separar información corporativa y personal.
