@@ -75,7 +75,8 @@ def _cur() -> dict:
 
 
 def _narrative_rows() -> list[tuple[str, dict]]:
-    """Entradas vigentes de la autonarrativa (sin las retiradas ni fusionadas)."""
+    """Entradas vigentes de la autonarrativa (sin las retiradas ni fusionadas ni los resúmenes de
+    revisión de decisiones)."""
     db = DATA_DIR / "autonarrativa.db"
     if not db.exists():
         return []
@@ -93,10 +94,18 @@ def _narrative_rows() -> list[tuple[str, dict]]:
         if curation.is_retired(cur, curation.narrative_id(row_id)):
             continue
         try:
-            out.append((text, json.loads(meta)))
+            data = json.loads(meta)
         except (TypeError, ValueError):
-            out.append((text, {}))
+            data = {}
+        if _is_review_summary(data):
+            continue
+        out.append((text, data))
     return out
+
+
+def _is_review_summary(meta: dict) -> bool:
+    """Resúmenes de agix_decision_review: repiten lecciones que ya están en las decisiones."""
+    return isinstance(meta, dict) and {"successes", "errors", "tone"} <= meta.keys()
 
 
 def _qualia_tone() -> tuple[str | None, dict]:

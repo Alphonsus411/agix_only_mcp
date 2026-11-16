@@ -154,6 +154,45 @@ def test_fusion_valida_tipos_y_estado(server):
         server.agix_memory_merge(d1, [d2])
 
 
+def test_corregir_una_leccion_conserva_la_original_y_el_motivo(server):
+    server.agix_decision_record("generar hooks con args", False,
+                                lesson="Claude Code solo admite una cadena en command")
+    did = _ids(server, "generar hooks con args")[0]
+    out = server.agix_lesson_correct(did, "Probablemente no admite args (sin verificar); una sola "
+                                          "cadena funciona en cualquier caso", reason="no verificado")
+    assert out["original"] == "Claude Code solo admite una cadena en command"
+    review = server.agix_decision_review()
+    assert review["recorded_lessons"][0]["lesson"].startswith("Probablemente")
+    text = _hook("session", server.DATA_DIR)
+    assert "sin verificar" in text and "solo admite" not in text
+    # La original sigue en los datos de AGIX y se puede volver a ella.
+    raw = json.loads((Path(server.DATA_DIR) / "metacognicion.json").read_text(encoding="utf-8"))
+    assert raw["decisions"][0]["resultado"]["leccion"] == "Claude Code solo admite una cadena en command"
+    back = server.agix_lesson_correct(did, None, reason="volver a la original")
+    assert back["lesson"] == "Claude Code solo admite una cadena en command"
+    assert [c["reason"] for c in back["corrections"]] == ["no verificado", "volver a la original"]
+
+
+def test_corregir_valida_tipo_y_motivo(server):
+    server.agix_decision_record("algo", True, lesson="x")
+    server.agix_memory_record("s", "d", "o", True)
+    did = _ids(server, "algo")[0]
+    eid = server.agix_memory_recent()["recent"][0]["id"]
+    with pytest.raises(ValueError, match="Solo se corrigen"):
+        server.agix_lesson_correct(eid, "y", reason="r")
+    with pytest.raises(ValueError, match="motivo"):
+        server.agix_lesson_correct(did, "y", reason=" ")
+
+
+def test_la_revision_ya_no_guarda_resumen_por_defecto_y_el_hook_los_ignora(server):
+    server.agix_decision_record("desplegar el viernes", False, lesson="sin margen para revertir")
+    server.agix_decision_review()
+    assert server.agix_narrative_query("Revisión de decisiones")["total"] == 0
+    server.agix_decision_review(store_in_narrative=True)  # pedido explícitamente: sí se guarda
+    assert server.agix_narrative_query("Revisión de decisiones")["total"] == 1
+    assert "Revisión de" not in _hook("prompt", server.DATA_DIR, "revisión de decisiones desplegar viernes margen")
+
+
 def test_la_curacion_sobrevive_a_un_reinicio(server, restart):
     server.agix_decision_record("obsoleta", False, lesson="ya no vale")
     did = _ids(server, "obsoleta")[0]

@@ -74,6 +74,13 @@ datos, y el formato de AGIX no cambia.
   más bajo (0.25–0.4) salen más candidatos, que hay que revisar uno a uno.
 - `agix_memory_merge(keep, merge, lesson)`: fusiona duplicados en `keep`, que cuenta sus
   repeticiones (`repeats`, «×n» en los hooks); `lesson` consolida el texto de la lección.
+- `agix_lesson_correct(id, lesson, reason)`: corrige el texto de la lección de una decisión
+  (errónea o no verificada) con su motivo; la original se conserva, cada cambio queda anotado y
+  `lesson=None` vuelve a ella.
+
+`agix_decision_review` ya no guarda por defecto su resumen en la autonarrativa (repetía lecciones
+que ya están en las decisiones; pásale `store_in_narrative=true` para una revisión que marque un
+hito), y los hooks no muestran esos resúmenes.
 
 Efectos de una entrada retirada o fusionada: deja de salir en búsquedas, recientes, línea temporal
 (salvo `include_retired`), revisión de decisiones, deliberación y hooks. La coherencia y las

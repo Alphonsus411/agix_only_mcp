@@ -68,10 +68,12 @@ def test_revision_tono_frustracion_y_ambivalencia(server):
     assert "Mejorar acción 'c'" in r["lessons"]  # sin lección registrada: mensaje genérico
 
 
-def test_revision_se_guarda_en_la_autonarrativa(server):
+def test_revision_se_guarda_en_la_autonarrativa_si_se_pide(server):
     _decisiones(server)
     antes = server.agix_narrative_self()["experiences"]
-    server.agix_decision_review()
+    server.agix_decision_review()  # por defecto no guarda el resumen
+    assert server.agix_narrative_self()["experiences"] == antes
+    server.agix_decision_review(store_in_narrative=True)
     assert server.agix_narrative_self()["experiences"] == antes + 1
     r = server.agix_narrative_query("revision decisiones aciertos errores", top=1)
     assert r["results"][0]["text"].startswith("Revisión de 4 decisiones")

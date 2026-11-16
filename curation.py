@@ -4,7 +4,8 @@ Nada se borra. Las marcas viven en curacion.json, junto a los datos, para que el
 AGIX (memoria.json, metacognicion.json, autonarrativa.db) no cambie:
 
     {"retired": {id: {"reason": str, "at": iso, "merged_into": id | null}},
-     "lessons": {id: "lección consolidada"}}
+     "lessons": {id: "lección consolidada o corregida"},
+     "corrections": {id: [{"at", "from", "to", "reason"}]}}   # historial de cambios de lección
 
 Identificadores: "e:<timestamp>" episodio, "d:<timestamp>" decisión, "n:<id>" autonarrativa.
 
@@ -34,7 +35,7 @@ _STOP = {
 
 
 def empty() -> dict:
-    return {"retired": {}, "lessons": {}}
+    return {"retired": {}, "lessons": {}, "corrections": {}}
 
 
 def load(data_dir: Path) -> dict:
@@ -49,6 +50,7 @@ def load(data_dir: Path) -> dict:
     if isinstance(data, dict):
         cur["retired"].update(data.get("retired") or {})
         cur["lessons"].update(data.get("lessons") or {})
+        cur["corrections"].update(data.get("corrections") or {})
     return cur
 
 
@@ -115,11 +117,16 @@ def restore(cur: dict, entry_id: str) -> bool:
     return cur["retired"].pop(entry_id, None) is not None
 
 
-def set_lesson(cur: dict, entry_id: str, text: str | None) -> None:
+def set_lesson(cur: dict, entry_id: str, text: str | None, reason: str | None = None) -> None:
+    """Sustituye el texto de la lección (la original se conserva en los datos de AGIX).
+    Con text=None vuelve a la original. Cada cambio queda anotado en "corrections"."""
+    previous = cur["lessons"].get(entry_id)
     if text:
         cur["lessons"][entry_id] = text
     else:
         cur["lessons"].pop(entry_id, None)
+    cur["corrections"].setdefault(entry_id, []).append(
+        {"at": _now(), "from": previous, "to": text, "reason": reason})
 
 
 # --------------------------------------------------------------------------- duplicados

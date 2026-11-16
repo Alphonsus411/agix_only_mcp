@@ -131,8 +131,9 @@ Herramientas de AGIX (framework de Adolfo González) para apoyar el razonamiento
 - agix_fagi_index, agix_harmony, agix_simulate_agent: métricas y simulación de agentes.
 Las puntuaciones éticas/afectivas son heurísticas: tómalas como una segunda opinión, no como verdad.
 - agix_memory_scope: qué memoria usa este proyecto (global, propia del proyecto o desactivada).
-- agix_memory_retire / agix_memory_duplicates / agix_memory_merge: curación sin borrar nada;
-  retira lecciones obsoletas o erróneas (con motivo) y fusiona duplicados (revisa cada grupo).
+- agix_memory_retire / agix_memory_duplicates / agix_memory_merge / agix_lesson_correct: curación
+  sin borrar nada; retira lo obsoleto (con motivo), fusiona duplicados (revisa cada grupo) y
+  corrige el texto de una lección errónea o no verificada.
 """
 INSTRUCTIONS += f"Memoria activa en esta sesión: {SCOPE.describe()}."
 if not SCOPE.enabled:
@@ -1490,12 +1491,14 @@ def _group_rate(rows: list[dict], key: str) -> dict:
 
 
 @server.tool()
-def agix_decision_review(max_items: int = 20, store_in_narrative: bool = True) -> dict:
+def agix_decision_review(max_items: int = 20, store_in_narrative: bool = False) -> dict:
     """Revisa las últimas decisiones (DecisionReviewer de AGIX) y extrae lecciones.
 
     Además del análisis de AGIX (aciertos, errores, tono emocional, resumen), devuelve las lecciones
     reales registradas, el acierto por acción y por meta, y las acciones que fallan repetidamente.
-    store_in_narrative: guarda el resumen de la revisión en la autonarrativa persistente.
+    store_in_narrative: guarda además el resumen en la autonarrativa. Por defecto no: el resumen
+        repite lecciones que ya están en las decisiones y, acumulado, solo añadía ruido. Úsalo
+        para revisiones que marquen un hito.
     Solo revisa las decisiones vigentes: las retiradas o fusionadas (agix_memory_retire /
     agix_memory_merge) no aparecen, y las lecciones consolidadas sustituyen a la original.
     repeated_errors: acciones que han fallado ≥ 2 veces en todo el historial (como el hook de
@@ -1668,10 +1671,35 @@ def agix_memory_merge(keep: str, merge: list[str], lesson: str | None = None) ->
     for m in merge:
         curation.retire(_cur, m, f"duplicada de {keep}", merged_into=keep)
     if lesson:
-        curation.set_lesson(_cur, keep, lesson.strip())
+        curation.set_lesson(_cur, keep, lesson.strip(), reason=f"consolidada al fusionar {merge}")
     _save_cur()
     return {"kept": keep, "merged": merge, "repeats": curation.repeats(_cur, keep),
             "lesson": curation.lesson(_cur, keep, None)}
+
+
+@server.tool()
+def agix_lesson_correct(id: str, lesson: str | None, reason: str) -> dict:
+    """Corrige el texto de la lección de una decisión sin perder la original.
+
+    Para lecciones parcialmente erróneas o que afirman algo no verificado (si toda la decisión
+    está obsoleta, mejor agix_memory_retire). id: "d:<timestamp>" (lo devuelven la revisión y
+    agix_metacognition_state). lesson: el texto corregido; None vuelve a la original.
+    reason: por qué se corrige (obligatorio). La original sigue en metacognicion.json y cada
+    cambio queda anotado; la lección corregida es la que muestran la revisión y los hooks.
+    """
+    if curation.kind(id) != "d":
+        raise ValueError("Solo se corrigen lecciones de decisiones (d:...); un episodio "
+                         "obsoleto se retira con agix_memory_retire")
+    if id not in _curable_entries():
+        raise ValueError(f"Id desconocido: {id}")
+    if not reason.strip():
+        raise ValueError("Indica el motivo (reason) de la corrección")
+    original = next(((e.get("resultado") or {}).get("leccion") for e in _metacog.logic.registro_reflexivo
+                     if curation.decision_id(e.get("timestamp")) == id), None)
+    curation.set_lesson(_cur, id, lesson.strip() if lesson else None, reason=reason.strip())
+    _save_cur()
+    return {"id": id, "original": original, "lesson": curation.lesson(_cur, id, original),
+            "corrections": _cur["corrections"].get(id, [])}
 
 
 def _memory_evidence(memory: str | None) -> dict:
