@@ -81,11 +81,36 @@ def test_consulta_ordena_por_relevancia_y_filtra(server):
     assert [x["text"] for x in r["results"]] == ["Integré AGIX como servidor MCP"]
 
 
-def test_evaluar_accion_ignora_tildes_y_persiste_puntuaciones(server, restart):
+def test_evaluar_accion_no_cambia_nada(server, restart):
     _historia(server)
-    r = server.agix_narrative_evaluate_action("priorizar estabilidad y calidad aunque cause frustracion")
+    antes = server.agix_narrative_self()
+    for _ in range(3):
+        r = server.agix_narrative_evaluate_action("push forzado sin revisar")
+    assert r["committed"] is False and r["matched"] == []
+    despues = server.agix_narrative_self()
+    assert (despues["planning_score"], despues["motivation_score"]) == (
+        antes["planning_score"], antes["motivation_score"])
+    s2 = restart(server)
+    assert s2.agix_narrative_self()["planning_score"] == antes["planning_score"]
+
+
+def test_compatibilidad_ignora_palabras_vacias(server):
+    _historia(server)
+    r = server.agix_narrative_evaluate_action(
+        "llevar la corrección al repo con tests para ganar estabilidad y calidad")
+    # contenido: llevar, correccion, repo, tests, ganar, estabilidad, calidad -> 2/7
+    assert set(r["matched"]) == {"estabilidad", "calidad"}
+    assert r["compatibility"] == pytest.approx(2 / 7, abs=1e-3)
+    assert "llevar" in r["unmatched"] and "la" not in r["unmatched"]
+
+
+def test_evaluar_accion_ignora_tildes_y_persiste_puntuaciones_con_commit(server, restart):
+    _historia(server)
+    r = server.agix_narrative_evaluate_action("priorizar estabilidad y calidad aunque cause frustracion",
+                                              commit=True)
     assert set(r["matched"]) == {"estabilidad", "calidad", "frustración"}
-    assert r["compatibility"] > 0
+    assert r["compatibility"] > 0 and r["committed"]
+    assert r["planning_score"] > 0.5 and r["motivation_score"] > 0.5
     planning, motivation = r["planning_score"], r["motivation_score"]
     s2 = restart(server)
     yo = s2.agix_narrative_self()

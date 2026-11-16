@@ -674,6 +674,18 @@ def agix_memory_record(
     return {"stored": _exp_dict(exp), "total": len(_memory.experiencias)}
 
 
+_STOPWORDS = {
+    # español (sin tildes, como las deja _norm)
+    "que", "los", "las", "del", "una", "uno", "unos", "unas", "con", "por", "para", "como", "mas",
+    "pero", "sin", "sobre", "entre", "hasta", "desde", "este", "esta", "estos", "estas", "ese",
+    "esa", "eso", "esto", "aquel", "sus", "nos", "les", "muy", "tambien", "cuando", "donde",
+    "porque", "aunque", "otra", "otro", "otras", "otros", "todo", "toda", "todos", "todas", "hay",
+    "ser", "estar", "haber", "tener", "hacer", "vez", "ya", "solo", "bien", "asi", "cada", "mismo",
+    # inglés
+    "the", "and", "for", "with", "that", "this", "from", "but", "not", "are", "was", "into", "than",
+}
+
+
 def _norm(text: str) -> str:
     """Minúsculas sin tildes, para comparar palabras con y sin acento."""
     import unicodedata
@@ -850,23 +862,35 @@ def agix_narrative_self(top: int = 10) -> dict:
 
 
 @server.tool()
-def agix_narrative_evaluate_action(action: str) -> dict:
+def agix_narrative_evaluate_action(action: str, commit: bool = False) -> dict:
     """Evalúa si una acción encaja con la identidad narrativa (valores, metas, afectos).
 
-    compatibility = palabras de la acción que coinciden con valores/metas/afectos ÷ palabras totales.
-    Efecto acumulativo de AGIX: cada evaluación sube planning_score si toca metas (o lo baja 0.05)
-    y motivation_score si toca afectos; ambos persisten entre sesiones.
+    compatibility = palabras con contenido de la acción (sin palabras vacías) que coinciden con
+        valores/metas/afectos ÷ palabras con contenido distintas. Es una medida léxica: una
+        frase hecha de palabras clave puntúa alto aunque no describa una acción; léase junto a
+        matched / unmatched.
+    commit: False (por defecto) solo evalúa, sin cambiar nada. True aplica el efecto de AGIX
+        (planning_score +0.1 por meta tocada o −0.05; motivation_score igual con los afectos)
+        y lo persiste: úsalo cuando la acción se lleva a cabo, no para consultar.
     """
-    tokens = _norm(action).split()
     sm = _narrative.self_model
     known = {_norm(k): k for k in list(sm.values) + list(sm.goals) + list(sm.affective_states)}
-    # AGIX compara palabras exactas: se traducen las variantes sin tilde a la forma registrada
-    normalized = " ".join(known.get(re.sub(r"\W", "", t), t) for t in tokens)
-    with _quiet():
-        result = _narrative.evaluate_action(normalized)
-    _save_narrative_scores()
-    matched = sorted({known[k] for k in (re.sub(r"\W", "", t) for t in tokens) if k in known})
-    return {**result, "matched": matched}
+    words = [w for w in re.findall(r"\w+", _norm(action)) if len(w) > 2 and w not in _STOPWORDS]
+    content = list(dict.fromkeys(words))  # distintas, en orden
+    matched = sorted({known[w] for w in content if w in known})
+    unmatched = [w for w in content if w not in known]
+    compatibility = (len(content) - len(unmatched)) / len(content) if content else 0.0
+    if commit:
+        # AGIX compara palabras exactas: se traducen las variantes sin tilde a la forma registrada
+        normalized = " ".join(known.get(w, w) for w in content)
+        with _quiet():
+            _narrative.evaluate_action(normalized)
+        _save_narrative_scores()
+    # Antes: cada evaluación (incluida una consulta) cambiaba y guardaba planning/motivation, y la
+    # compatibilidad dividía por todas las palabras, vacías incluidas.
+    return {"compatibility": round(compatibility, 3), "matched": matched, "unmatched": unmatched,
+            "planning_score": round(sm.planning_score, 3),
+            "motivation_score": round(sm.motivation_score, 3), "committed": commit}
 
 
 # --------------------------------------------------------------------------- ontología

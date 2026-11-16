@@ -42,7 +42,7 @@ Datos persistentes en `%USERPROFILE%\.agix-mcp` (cambiable con `AGIX_MCP_DATA`):
 | `agix_memory_timeline` | `EpisodicMemory` | Episodios entre fechas (UTC), en orden y con balance de aciertos |
 | `agix_memory_narrative` | `NarrativeMemoryTree` | Resumen narrativo jerárquico con pérdida (se reconstruye al arrancar) |
 | `agix_narrative_store/query` | `AutonarrativeCore` | Autonarrativa en SQLite con valores, metas y afectos; búsqueda top-k puntuada |
-| `agix_narrative_self` / `agix_narrative_evaluate_action` | `AutonarrativeCore.SelfModel` | Modelo de sí mismo y encaje de una acción con esa identidad |
+| `agix_narrative_self` / `agix_narrative_evaluate_action` | `AutonarrativeCore.SelfModel` | Modelo de sí mismo y encaje (léxico) de una acción con esa identidad; evaluar no cambia nada, `commit=true` aplica el efecto de AGIX en planificación/motivación |
 | `agix_ontology_add/query` | `memory.symbolic.Ontology` | Grafo persistente, cierre transitivo de relaciones y herencia de atributos |
 | `agix_ethics_judge` | `AlignmentInterface` + marcos | Eco, utilitarista, deontológico, virtudes |
 | `agix_intention_evaluate` | `IntentionEvaluator` | Consecuencias, conflicto de metas, conducta |
