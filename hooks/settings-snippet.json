@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/adolfo.gonzalez.MARKETING/PycharmProjects/agix-mcp/.venv/Scripts/python.exe",
+            "args": ["C:/Users/adolfo.gonzalez.MARKETING/PycharmProjects/agix-mcp/hooks/agix_context.py", "session"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/adolfo.gonzalez.MARKETING/PycharmProjects/agix-mcp/.venv/Scripts/python.exe",
+            "args": ["C:/Users/adolfo.gonzalez.MARKETING/PycharmProjects/agix-mcp/hooks/agix_context.py", "prompt"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

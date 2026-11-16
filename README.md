@@ -15,6 +15,19 @@ Datos persistentes en `%USERPROFILE%\.agix-mcp` (cambiable con `AGIX_MCP_DATA`):
 `qualia_estado.json` + `qualia_modelos.json` (espíritu Qualia y sus pesos aprendidos), `suenos.json`
 `autonarrativa.db` + `autonarrativa_scores.json`, `metacognicion.json` e `identidad.json`.
 
+## Hooks y skill (uso automático)
+
+- **`hooks/agix_context.py`**: solo lee `~/.agix-mcp` (no importa agix, ~150 ms) y no imprime nada
+  si no hay datos útiles.
+  - `session` (SessionStart): identidad, tono de Qualia, coherencia, errores repetidos, últimas
+    lecciones, valores/metas de la autonarrativa.
+  - `prompt` (UserPromptSubmit): hasta 3 episodios, decisiones o entradas narrativas que comparten
+    al menos 2 palabras clave (sin tildes) con el mensaje.
+  - Para activarlos, añade el bloque de `hooks/settings-snippet.json` a `~/.claude/settings.json`
+    (ajusta las rutas si clonas el repo en otro sitio). Se cargan en las sesiones nuevas.
+- **`skill/agix/SKILL.md`**: cuándo usar cada herramienta (consultar al empezar, verificar al razonar,
+  registrar al terminar, qué no registrar). Instalación: copiar la carpeta a `~/.claude/skills/agix/`.
+
 ## Herramientas
 
 | Herramienta | Base en AGIX | Uso |
