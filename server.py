@@ -60,6 +60,7 @@ with contextlib.redirect_stdout(sys.stderr):
     from agix.qualia.qualia_spirit_core import QualiaSpiritCore
     from agix.qualia.dream_bank import DreamBank
     from agix.identity.personality import PersonalityProfile
+    from agix.identity.identity_core import SyntheticIdentity
     from agix.learning.plasticity import HebbianPlasticity
     from agix.perception.sensor_map import Sensor, SensorMap
     with warnings.catch_warnings():  # el paquete orchestrator importa el hub y avisa del token
@@ -82,6 +83,9 @@ Herramientas de AGIX (framework de Adolfo González) para apoyar el razonamiento
 - agix_decision_record / agix_decision_review / agix_metacognition_state: metacognición persistente;
   registra decisiones con su resultado y lección, revisa aciertos/errores y detecta errores repetidos.
 - agix_resolve_internal_conflict: delibera entre hipótesis, reforzando las respaldadas por la memoria.
+- agix_identity_define / agix_identity_event: identidad sintética persistente (nombre, origen,
+  atributos, rasgos, hitos). agix_identity_portrait: autorretrato que une identidad, Qualia,
+  autonarrativa y metacognición.
 - agix_ontology_*: grafo persistente de conceptos, atributos y relaciones.
 - agix_ethics_judge / agix_intention_evaluate / agix_meta_evaluate / agix_goal_register:
   evaluación ética e intencional; requieren que traduzcas el plan a puntuaciones 0..1.
@@ -1374,6 +1378,149 @@ def agix_dreams_recent(n: int = 5) -> dict:
     """Últimos n sueños del DreamBank, en forma poética y en bruto."""
     return {"poetic": _dreams.resumen_reciente(n), "raw": _dreams.suenos[-n:],
             "total": len(_dreams.suenos)}
+
+
+# --------------------------------------------------------------------------- identidad
+# SyntheticIdentity persistente (identidad.json) + rasgos en el SelfModel de la metacognición.
+# agix_identity_portrait la combina con Qualia, la autonarrativa y la metacognición.
+IDENTITY_FILE = DATA_DIR / "identidad.json"
+
+
+def _load_identity() -> SyntheticIdentity:
+    data = {}
+    if IDENTITY_FILE.exists():
+        try:
+            data = json.loads(IDENTITY_FILE.read_text(encoding="utf-8"))
+        except Exception as exc:
+            log.warning("Identidad ilegible, se crea una nueva: %s", exc)
+    ident = SyntheticIdentity(data.get("nombre", _load_qualia_config()["nombre"]),
+                              data.get("origen", "AGIX MCP"), dict(data.get("atributos", {})))
+    ident.historia = list(data.get("historia", []))
+    for trait in data.get("rasgos", []):
+        _metacog.self_model.add_trait(trait)
+    return ident
+
+
+def _save_identity() -> None:
+    data = {"nombre": _identity.nombre, "origen": _identity.origen, "atributos": _identity.atributos,
+            "historia": _identity.historia, "rasgos": _metacog.self_model.traits}
+    IDENTITY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+_identity = _load_identity()
+_metacog.self_model.identity["name"] = _identity.nombre
+
+
+@server.tool()
+def agix_identity_define(
+    name: str | None = None,
+    origin: str | None = None,
+    attributes: dict[str, str] | None = None,
+    remove_attributes: list[str] | None = None,
+    add_traits: list[str] | None = None,
+    remove_traits: list[str] | None = None,
+) -> dict:
+    """Define o ajusta la identidad sintética persistente (SyntheticIdentity de AGIX).
+
+    name / origin: nombre y origen ("nací en ..."). attributes: rasgos simbólicos clave: valor
+    (p. ej. {"rol": "asistente de ingeniería", "estilo": "riguroso"}). add_traits / remove_traits:
+    rasgos breves del SelfModel (p. ej. "curioso", "prudente").
+    El nombre de la identidad no renombra al espíritu Qualia (eso requiere agix_qualia_configure).
+    """
+    if name:
+        _identity.nombre = name
+        _metacog.self_model.identity["name"] = name
+    if origin:
+        _identity.origen = origin
+    for k, v in (attributes or {}).items():
+        _identity.actualizar_atributo(k, v)
+    for k in remove_attributes or []:
+        _identity.atributos.pop(k, None)
+    for t in add_traits or []:
+        _metacog.self_model.add_trait(t)
+    for t in remove_traits or []:
+        if t in _metacog.self_model.traits:
+            _metacog.self_model.traits.remove(t)
+    _save_identity()
+    return {"name": _identity.nombre, "origin": _identity.origen, "attributes": _identity.atributos,
+            "traits": _metacog.self_model.traits, "narrative": _identity.generar_narrativa()}
+
+
+@server.tool()
+def agix_identity_event(
+    event: str,
+    to_narrative: bool = False,
+    values: list[str] | None = None,
+    goals: list[str] | None = None,
+    affects: list[str] | None = None,
+) -> dict:
+    """Añade un hito a la historia de la identidad (eventos que definen quién es).
+
+    to_narrative: además lo guarda en la autonarrativa con sus valores/metas/afectos, para que
+    influya en el modelo de sí mismo y en agix_narrative_evaluate_action.
+    """
+    _identity.agregar_evento(event)
+    _save_identity()
+    out: dict[str, Any] = {"event": event, "history_length": len(_identity.historia)}
+    if to_narrative:
+        out["narrative_id"] = agix_narrative_store(event, values=values, goals=goals, affects=affects)["id"]
+    return out
+
+
+@server.tool()
+def agix_identity_portrait(recent_events: int = 5) -> dict:
+    """Autorretrato unificado: quién soy según todos los módulos de AGIX.
+
+    Combina la identidad (narrativa, rasgos, historia reciente), el estado afectivo de Qualia
+    (tono, modo, personalidad), la autonarrativa (valores, metas y afectos dominantes) y la
+    metacognición (coherencia, metas en las que acierto o fallo, auto-organización), y termina
+    con la pregunta de autoevaluación de AGIX y una síntesis en texto.
+    """
+    with _quiet():
+        coherence = _metacog.self_assess()
+        self_query = _metacog.self_model.generate_self_query()
+    narrative_self = _narrative_self_summary(top=3)
+    rows = _decision_rows(_metacog.logic.registro_reflexivo)
+    by_goal = _group_rate(rows, "goal")
+    strong = sorted(g for g, s in by_goal.items() if s["success_rate"] >= 0.75)
+    weak = sorted(g for g, s in by_goal.items() if s["success_rate"] < 0.5)
+    cfg = _load_qualia_config()
+    tone = _spirit.estado_emocional.tono_general()
+    history = _identity.historia[-recent_events:]
+
+    base = _identity.generar_narrativa().rstrip()
+    parts = [base if base.endswith(".") else base + "."]
+    if _metacog.self_model.traits:
+        parts.append("Me describo como " + ", ".join(_metacog.self_model.traits) + ".")
+    if narrative_self["values"]:
+        parts.append("Lo que más valoro: " + ", ".join(v["name"] for v in narrative_self["values"]) + ".")
+    if narrative_self["goals"]:
+        parts.append("Persigo: " + ", ".join(g["name"] for g in narrative_self["goals"]) + ".")
+    parts.append(f"Ahora mismo mi tono es {tone} y estoy en modo {_mode(_spirit)}.")
+    if coherence is not None:
+        parts.append(f"He acertado en el {coherence:.0%} de mis {len(rows)} decisiones registradas.")
+    if strong:
+        parts.append("Se me da bien: " + ", ".join(strong) + ".")
+    if weak:
+        parts.append("Debo mejorar en: " + ", ".join(weak) + ".")
+    if history:
+        parts.append("Mis últimos hitos: " + " → ".join(history) + ".")
+
+    return _plain({
+        "identity": {"name": _identity.nombre, "origin": _identity.origen,
+                     "attributes": _identity.atributos, "traits": _metacog.self_model.traits,
+                     "recent_history": history, "history_length": len(_identity.historia)},
+        "affect": {"spirit": _spirit.nombre, "tone": tone, "mode": _mode(_spirit),
+                   "emotions": _spirit.estado_emocional.emociones,
+                   "personality": {k: cfg[k] for k in ("optimismo", "introversion", "energia")}},
+        "narrative_self": narrative_self,
+        "metacognition": {"coherence": coherence, "decisions": len(rows), "strong_goals": strong,
+                          "weak_goals": weak,
+                          "self_organization": _metacog.self_model.self_organization_score,
+                          "proto_agency": _metacog.proto_agency},
+        "self_query": self_query,
+        "synthesis": " ".join(parts),
+    })
 
 
 # --------------------------------------------------------------------------- métricas y simulación

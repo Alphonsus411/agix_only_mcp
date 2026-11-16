@@ -13,7 +13,7 @@ claude mcp add --scope user agix -e PYTHONIOENCODING=utf-8 -- "%CD%\.venv\Script
 Datos persistentes en `%USERPROFILE%\.agix-mcp` (cambiable con `AGIX_MCP_DATA`):
 `memoria.json` (experiencias), `ontologia.json` (conceptos), `qualia_config.json`,
 `qualia_estado.json` + `qualia_modelos.json` (espíritu Qualia y sus pesos aprendidos), `suenos.json`
-`autonarrativa.db` + `autonarrativa_scores.json` y `metacognicion.json`.
+`autonarrativa.db` + `autonarrativa_scores.json`, `metacognicion.json` e `identidad.json`.
 
 ## Herramientas
 
@@ -35,6 +35,8 @@ Datos persistentes en `%USERPROFILE%\.agix-mcp` (cambiable con `AGIX_MCP_DATA`):
 | `agix_decision_record` | `MetacognitionManager` | Decisión + resultado + lección + meta + módulos implicados |
 | `agix_decision_review` | `DecisionReviewer` | Aciertos/errores, lecciones reales, acierto por acción y meta, errores repetidos; se guarda en la autonarrativa |
 | `agix_metacognition_state` | `MetacognitionManager` + `SelfOrganizationMonitor` | Coherencia, auto-organización y componentes, proto-agencia |
+| `agix_identity_define` / `agix_identity_event` | `SyntheticIdentity` + `SelfModel` | Identidad persistente: nombre, origen, atributos, rasgos e hitos (opcionalmente a la autonarrativa) |
+| `agix_identity_portrait` | Todos | Autorretrato unificado: identidad + Qualia + autonarrativa + metacognición, con síntesis en texto |
 | `agix_resolve_internal_conflict` | `MetaReflectionEngine` | Deliberación entre hipótesis reforzando las respaldadas por la memoria episódica |
 | `agix_goal_register` | `GoalEngine` | Metas con filtro ético (< 0.6 se rechaza) |
 | `agix_emotion_update` | `EmotionSimulator` | Estado PAD puntual |
