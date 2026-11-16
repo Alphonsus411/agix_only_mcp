@@ -75,7 +75,9 @@ Tests: `.venv\Scripts\python -m pytest tests -q`.
   al aparecer emociones nuevas (antes se perdían).
 - `orchestrator/synthetic_loop.py`: pesos PAD por defecto (`DEFAULT_PAD_WEIGHTS`, parámetro
   `emotion_simulator`), estado `qualia` persistente, las entradas ya no se aplican hasta 3 veces por ciclo
-  y el foco de atención no se acumula como modulador.
+  y el foco de atención no se acumula como modulador. La reflexión ya no se reinserta en la memoria
+  (cada ciclo anidaba entera la anterior y el texto crecía sin límite) y el registro reflexivo persiste
+  entre ciclos, con `exito` = la acción superó el juicio ético (antes la coherencia salía siempre 0.00).
 
 - `qualia/spirit.py`: nuevo parámetro `atenuacion` (por defecto 0.9). Antes de cada experiencia las
   emociones previas se multiplican por ese factor, así que el espíritu sale de la desconexión

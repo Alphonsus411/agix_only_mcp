@@ -80,6 +80,28 @@ def test_ciclo_cognitivo_acepta_y_aborta(server):
     assert mal["pad"]["placer"] < 0
 
 
+MALA = {"pro_vida": 0.5, "no_dano": 0.3, "respeto": 0.1, "risk": 0.8, "impact": 0.6}
+BUENA = {"pro_vida": 0.7, "no_dano": 0.9, "respeto": 0.95, "risk": 0.15, "impact": 0.5}
+
+
+def test_ciclo_reflexion_no_se_anida(server):
+    server.agix_cognitive_cycle(MALA, reset=True)
+    textos = [server.agix_cognitive_cycle(BUENA)["reflection"] for _ in range(6)]
+    for t in textos:
+        assert t.count("Reflexión interna:") == 1
+        assert t.count("Estado PAD") == 1
+    assert len(textos[-1]) < 600
+
+
+def test_ciclo_coherencia_es_la_proporcion_de_acciones_eticas(server):
+    assert server.agix_cognitive_cycle(MALA, reset=True)["coherence"] == 0.0
+    r = server.agix_cognitive_cycle(BUENA)
+    assert r["coherence"] == 0.5
+    assert "Coherencia global: 0.50" in r["reflection"]
+    assert "score" not in r["action"] and "performance" not in r["action"]
+    assert "self_organization" not in r
+
+
 def test_ciclo_no_arrastra_senales_antiguas(server):
     server.agix_cognitive_cycle({"risk": 0.9, "extra": 1.0})
     r = server.agix_cognitive_cycle({"pro_vida": 0.9})

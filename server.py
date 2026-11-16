@@ -1403,6 +1403,8 @@ def agix_cognitive_cycle(inputs: dict[str, float], reset: bool = False) -> dict:
         se aceptan otras como contexto. Si la ética da < 0.6 la acción se aborta.
     reset: reinicia el bucle (estado PAD, modelo propio y memoria narrativa acumulados).
     El estado PAD se acumula entre ciclos de la misma sesión.
+    coherence: proporción de acciones de la sesión del bucle que superaron el juicio ético.
+    No hay entorno que dé recompensa, así que no se devuelve puntuación de la acción.
     """
     global _loop
     if reset or _loop is None:
@@ -1418,14 +1420,17 @@ def agix_cognitive_cycle(inputs: dict[str, float], reset: bool = False) -> dict:
     with _quiet():
         out = _loop.cycle()
     pad = out["emocion"]
+    # score/performance del controlador son 0.0 fijos (corre sin entorno y con recompensa 0.0) y
+    # self_organization_score solo cuenta objetos no vacíos (casi siempre 1.0): no se exponen.
+    action = {k: v for k, v in out["accion"].items() if k not in ("score", "performance")}
     return _plain({
         "inputs": out["entradas"],
         "pad": {"placer": pad.placer, "activacion": pad.activacion, "dominancia": pad.dominancia},
         "ethics": out["etica"],
-        "action": out["accion"],
+        "action": action,
         "aborted": bool(out["accion"].get("aborted")),
         "reflection": out["reflexion"],
-        "self_organization": out["yo"].get("self_organization_score"),
+        "coherence": out.get("coherencia"),
     })
 
 

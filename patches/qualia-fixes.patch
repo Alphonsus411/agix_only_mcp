@@ -281,7 +281,7 @@ index d38db80..6119843 100644
  
      # ------------------------------------------------------------------
 diff --git a/src/agix/orchestrator/synthetic_loop.py b/src/agix/orchestrator/synthetic_loop.py
-index 23b00a6..8b178d7 100644
+index 23b00a6..4df6d78 100644
 --- a/src/agix/orchestrator/synthetic_loop.py
 +++ b/src/agix/orchestrator/synthetic_loop.py
 @@ -38,16 +38,34 @@ class SyntheticLoop:
@@ -320,19 +320,22 @@ index 23b00a6..8b178d7 100644
          self.self_model = self_model or SelfModel()
          self.alignment = AlignmentInterface()
  
-@@ -57,8 +75,10 @@ class SyntheticLoop:
+@@ -57,8 +75,13 @@ class SyntheticLoop:
              controller = ControllerCore(policy, performance_tracker=tracker)
          self.controller = controller
  
 +        # Estado cualitativo persistente entre ciclos, compartido con la reflexión
 +        self.qualia = EmotionalState()
++        # Registro reflexivo persistente entre ciclos (antes se creaba uno por ciclo, con un
++        # único evento sin "exito", y la coherencia salía siempre 0.00)
++        self.reflexor = ReflexiveLogic()
          self.reflection = MetaReflectionEngine(
 -            emotions=self.emotion, qualia=EmotionalState()
 +            emotions=self.emotion, qualia=self.qualia
          )
  
          # Registro de hooks para integración externa
-@@ -95,9 +115,19 @@ class SyntheticLoop:
+@@ -95,9 +118,19 @@ class SyntheticLoop:
          self._emit("after_perception", {"entradas": entradas})
  
          # 2. Simulación emocional
@@ -355,7 +358,34 @@ index 23b00a6..8b178d7 100644
          estado_emocional: PADState = self.emotion.estado()
          self.self_model.update_state("emocion", estado_emocional)
          self._emit("after_emotion", {"emocion": estado_emocional})
-@@ -144,10 +174,13 @@ class SyntheticLoop:
+@@ -117,7 +150,7 @@ class SyntheticLoop:
+ 
+         # 4. Control de acciones
+         threshold = 0.6
+-        reflexor = ReflexiveLogic()
++        reflexor = self.reflexor
+         if score >= threshold:
+             datos_control = self.controller.ciclo_control(
+                 entradas,
+@@ -129,8 +162,10 @@ class SyntheticLoop:
+                     "advantages": [],
+                 },
+             )
++            # "exito": la acción propuesta superó el juicio ético. La coherencia del registro
++            # es así la proporción de propuestas aceptables en la sesión.
+             reflexor.registrar_evento(
+-                entradas, self.controller.politica_actual, datos_control
++                entradas, self.controller.politica_actual, {**datos_control, "exito": True}
+             )
+             resumen_accion = {
+                 "estado": self.controller.resumen_estado(),
+@@ -139,20 +174,25 @@ class SyntheticLoop:
+             }
+         else:
+             resumen_accion = {"aborted": True, "reason": label}
+-            reflexor.registrar_evento(entradas, "no_action", resumen_accion)
++            reflexor.registrar_evento(entradas, "no_action", {**resumen_accion, "exito": False})
+         self._emit("after_control", resumen_accion)
  
          # 5. Meta‑reflexión
          pensamiento = reflexor.resumen_reflexivo()
@@ -371,3 +401,19 @@ index 23b00a6..8b178d7 100644
          }
          texto_reflexion, estado_emocional_final = self.reflection.run_internal_dialogue(
              context
+         )
+-        self.reflection.memory.insert(texto_reflexion)
++        # No se reinserta texto_reflexion en la memoria: ya contiene el resumen de esa misma
++        # memoria y la siguiente reflexión lo anidaba entero (el texto crecía en cada ciclo).
++        # run_internal_dialogue ya guarda el pensamiento del ciclo.
+ 
+         self.self_model.update_state("last_reflection", texto_reflexion)
+         self.self_model.update_state("emocion", estado_emocional_final)
+@@ -187,6 +227,7 @@ class SyntheticLoop:
+             "etica": juicio_etico,
+             "accion": resumen_accion,
+             "reflexion": texto_reflexion,
++            "coherencia": reflexor.evaluar_coherencia(),
+         }
+ 
+         self._emit("after_reflection", resultado)

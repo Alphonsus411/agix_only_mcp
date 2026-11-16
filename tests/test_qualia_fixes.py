@@ -314,6 +314,16 @@ def test_loop_sigue_abortando_acciones_daninas():
     assert out["accion"].get("aborted") is True
 
 
+def test_loop_reflexion_acotada_y_coherencia_persistente():
+    loop = _loop(ETICA)
+    salidas = [_cycle(loop) for _ in range(10)]
+    assert all(s["reflexion"].count("Reflexión interna:") == 1 for s in salidas)
+    assert len(salidas[-1]["reflexion"]) < 600
+    assert salidas[-1]["coherencia"] == 1.0
+    assert len(loop.reflexor.registro_reflexivo) == 10
+    assert "Eventos analizados: 10 | Coherencia global: 1.00" in salidas[-1]["reflexion"]
+
+
 def test_loop_acepta_simulador_propio():
     from agix.emotion.emotion_simulator import EmotionSimulator
 
