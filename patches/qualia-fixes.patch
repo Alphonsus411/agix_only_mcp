@@ -1,4 +1,4 @@
-﻿diff --git a/src/agix/qualia/neuro_plastic.py b/src/agix/qualia/neuro_plastic.py
+diff --git a/src/agix/qualia/neuro_plastic.py b/src/agix/qualia/neuro_plastic.py
 index 9a2c751..22f968a 100644
 --- a/src/agix/qualia/neuro_plastic.py
 +++ b/src/agix/qualia/neuro_plastic.py
@@ -117,8 +117,34 @@ index 28be4f5..6d11cc6 100644
      # ------------------------------------------------------------------
      def _sigmoid(self, x: np.ndarray) -> np.ndarray:
          return 1 / (1 + np.exp(-x))
+diff --git a/src/agix/qualia/qualia_core.py b/src/agix/qualia/qualia_core.py
+index c9d52ff..eaf2b26 100644
+--- a/src/agix/qualia/qualia_core.py
++++ b/src/agix/qualia/qualia_core.py
+@@ -30,11 +30,19 @@ class EmotionalState:
+ 
+     def sentir(self, tipo: str, intensidad: float):
+         """
+-        Registra una emoción sentida. Se acumula o modifica si ya existe.
++        Registra una emoción sentida. Si ya existe, se promedia con la nueva intensidad,
++        pero nunca por debajo del nivel que ya tenía.
++
++        Corrección local: el original promediaba sin más (``(anterior + intensidad) / 2``), de
++        modo que sentir una emoción con menos intensidad que la acumulada la *reducía* (p. ej.
++        un miedo 0.3 sobre un miedo 0.39 lo bajaba a 0.32). Ahora una intensidad mayor la sube
++        igual que antes y una menor la deja como está; el desvanecimiento queda a cargo de
++        ``atenuar``.
+         """
+         intensidad = max(0.0, min(intensidad, 1.0))
+         if tipo in self.emociones:
+-            self.emociones[tipo] = (self.emociones[tipo] + intensidad) / 2
++            anterior = self.emociones[tipo]
++            self.emociones[tipo] = max(anterior, (anterior + intensidad) / 2)
+         else:
+             self.emociones[tipo] = intensidad
+ 
 diff --git a/src/agix/qualia/spirit.py b/src/agix/qualia/spirit.py
-index d38db80..d5be1f7 100644
+index d38db80..6119843 100644
 --- a/src/agix/qualia/spirit.py
 +++ b/src/agix/qualia/spirit.py
 @@ -38,6 +38,7 @@ class QualiaSpirit:
@@ -145,17 +171,40 @@ index d38db80..d5be1f7 100644
          self.nombre = nombre
          self.edad_aparente = edad_aparente
          self.estado_emocional = EmotionalState()
-@@ -106,6 +115,9 @@ class QualiaSpirit:
+@@ -103,11 +112,21 @@ class QualiaSpirit:
+         Si existe ``middleware``, el estado se envía y se sincroniza
+         periódicamente con la red colectiva.
+         """
++        # El diario registra la carga tal como llegó (corrección local: guardaba la carga ya
++        # modulada por la plasticidad, p. ej. 0.7 → 0.6749); la plasticidad sigue modulando
++        # lo que se siente.
++        carga_vivida = carga
          if self.plasticidad:
              ajuste = self.ajustar_emociones({tipo_emocion: carga})
              carga = ajuste.get(tipo_emocion, carga)
-+        # Las emociones previas se desvanecen antes de sentir la nueva
++        # Las emociones previas se desvanecen antes de sentir la nueva; la emoción que se
++        # está sintiendo no se desvanece (corrección local: volver a sentir miedo no puede
++        # dejar menos miedo que antes de sentirlo)
++        previa = self.estado_emocional.emociones.get(tipo_emocion)
 +        if self.atenuacion < 1.0:
 +            self.estado_emocional.atenuar(self.atenuacion)
          self.estado_emocional.sentir(tipo_emocion, carga)
-         self.recuerdos.append((evento, tipo_emocion, carga))
+-        self.recuerdos.append((evento, tipo_emocion, carga))
++        self.recuerdos.append((evento, tipo_emocion, carga_vivida))
          # Mantener el estado interno sincronizado
-@@ -192,10 +204,21 @@ class QualiaSpirit:
+         self.self_model.update_state("recuerdos", self.recuerdos.copy())
+         if self.plasticidad:
+@@ -115,6 +134,9 @@ class QualiaSpirit:
+             self.estado_emocional.emociones = self.ajustar_emociones(
+                 self.estado_emocional.emociones
+             )
++        if previa is not None:  # ni la atenuación ni la plasticidad la dejan por debajo
++            self.estado_emocional.emociones[tipo_emocion] = max(
++                self.estado_emocional.emociones[tipo_emocion], previa)
+         self._registrar_vector()
+ 
+         total = sum(self.estado_emocional.emociones.values())
+@@ -192,10 +214,21 @@ class QualiaSpirit:
  
      # ------------------------------------------------------------------
      def _ensure_predictor(self) -> None:
@@ -181,6 +230,56 @@ index d38db80..d5be1f7 100644
  
      def _registrar_vector(self) -> None:
          self._ensure_predictor()
+@@ -206,9 +239,13 @@ class QualiaSpirit:
+         ])
+         self._historial_vectores.append(vec)
+         if len(self._historial_vectores) >= 2:
++            # Corrección local: la RNN aprende el CAMBIO entre estados (no el estado absoluto)
++            # y recorre el historial desde un estado oculto limpio. Antes aprendía valores
++            # absolutos partiendo de pesos ~0.1 y su predicción se quedaba en ~0.0–0.04.
+             x = np.vstack(self._historial_vectores[:-1])
+             y = np.vstack(self._historial_vectores[1:])
+-            self.predictor.update(x, y)
++            self.predictor.reset_state()
++            self.predictor.update(x, y - x)
+         if len(self._historial_vectores) > 20:
+             self._historial_vectores.pop(0)
+ 
+@@ -223,14 +260,32 @@ class QualiaSpirit:
+             self._last_pull = now
+ 
+     def predecir_futuro(self) -> dict:
+-        """Predice el próximo estado emocional."""
++        """Predice el próximo estado emocional.
++
++        Corrección local: predicción = estado actual + cambio previsto por la RNN, recortada
++        a [0, 1], recorriendo el historial desde un estado oculto limpio. No modifica el
++        estado de la red, así que llamarla varias veces da siempre lo mismo.
++        """
+         self._ensure_predictor()
+         if not self.predictor:
+             return {}
+         vec = np.array([
+             self.estado_emocional.emociones.get(e, 0.0) for e in self.emotion_order
+         ])
+-        pred = self.predictor.forward(np.expand_dims(vec, 0))[-1]
++        historial = list(self._historial_vectores)
++        if not historial or not np.array_equal(historial[-1], vec):
++            historial.append(vec)
++        p = self.predictor
++        guardado = (p.h.copy(), getattr(p, "c", None))
++        guardado = (guardado[0], None if guardado[1] is None else guardado[1].copy())
++        try:
++            p.reset_state()
++            cambio = p.forward(np.vstack(historial))[-1]
++        finally:
++            p.h = guardado[0]
++            if guardado[1] is not None:
++                p.c = guardado[1]
++        pred = np.clip(vec + cambio, 0.0, 1.0)
+         return {e: float(pred[i]) for i, e in enumerate(self.emotion_order)}
+ 
+     # ------------------------------------------------------------------
 diff --git a/src/agix/orchestrator/synthetic_loop.py b/src/agix/orchestrator/synthetic_loop.py
 index 23b00a6..8b178d7 100644
 --- a/src/agix/orchestrator/synthetic_loop.py

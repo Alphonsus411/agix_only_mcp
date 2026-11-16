@@ -81,6 +81,12 @@ Tests: `.venv\Scripts\python -m pytest tests -q`.
   emociones previas se multiplican por ese factor, así que el espíritu sale de la desconexión
   (con 0.9, tras ~7 experiencias positivas; 0.85 → 4; 0.95 → 14). `atenuacion=1.0` mantiene el
   comportamiento original, en el que tristeza + miedo > 0.8 dejaba la desconexión permanente.
+- `qualia/qualia_core.py` + `qualia/spirit.py`: una experiencia ya no baja su propia emoción. `sentir`
+  promediaba (un miedo 0.3 sobre un miedo 0.39 lo bajaba a 0.32); ahora una intensidad menor deja la
+  emoción como está, y ni la atenuación ni la plasticidad la dejan por debajo de su nivel previo.
+- `qualia/spirit.py`: el diario guarda la carga recibida, no la ya modulada por la plasticidad (0.7 → 0.6749).
+- `qualia/spirit.py`: la RNN aprende el cambio entre estados y predice actual + cambio (antes predecía
+  valores absolutos que se quedaban en ~0.00–0.04); `predecir_futuro` ya no altera el estado oculto.
 
 ## Notas sobre AGIX 1.11.0 detectadas al integrarlo
 

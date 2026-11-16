@@ -28,6 +28,27 @@ def test_experiencia_devuelve_modo_y_prediccion(server):
     assert r["emotions"]["miedo"] > 0
 
 
+def test_meta_sin_decisiones_no_inventa_coherencia_ni_etica(server):
+    meta = server.agix_qualia_state()["meta"]
+    assert meta["coherence"] is None and meta["decisions"] == 0
+    assert "ethics" not in meta and "consequence_simulation" not in meta
+
+
+def test_meta_e_introspeccion_coinciden_con_la_metacognicion(server):
+    server.agix_decision_record("a", True, modules=["qualia", "memory"],
+                                dependencies={"qualia": ["memory"]})
+    server.agix_decision_record("b", False, modules=["hooks"])
+    estado = server.agix_qualia_state()
+    meta, intro = estado["meta"], estado["introspection"]
+    metacog = server.agix_metacognition_state()
+    assert meta["coherence"] == metacog["coherence"] == 0.5
+    assert meta["decisions"] == 2
+    assert meta["proto_agency"] == metacog["proto_agency"]
+    assert intro["self_organization_score"] == metacog["self_organization"]["score"] > 0
+    assert intro["modules"] == metacog["self_organization"]["active_modules"]
+    assert meta["affective_tone"] == estado["tone"]
+
+
 def test_configurar_atenuacion_y_plasticidad_en_caliente(server):
     r = server.agix_qualia_configure(decay=0.7, plasticity=False)
     assert r["config"]["atenuacion"] == 0.7

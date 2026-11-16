@@ -1304,12 +1304,26 @@ def agix_qualia_experience(event: str, charge: float, emotion: str) -> dict:
 @server.tool()
 def agix_qualia_state(diary_entries: int = 20) -> dict:
     """Estado completo del espíritu Qualia: emociones, tono, modo, predicción, asociaciones
-    aprendidas, diario reciente, introspección (SelfModel), configuración y metaevaluación."""
+    aprendidas, diario reciente, introspección, configuración y metaevaluación.
+
+    introspection y meta salen de la metacognición persistente (la misma que
+    agix_metacognition_state); la ética se evalúa aparte con agix_ethics_judge / agix_meta_evaluate.
+    """
     with _quiet():
-        meta = _spirit.metaevaluar()
         prediction = _spirit.predecir_futuro()
-        intro = _spirit.introspeccionar()
-    intro = {k: v for k, v in intro.items() if k != "state"}
+        coherence = _metacog.self_assess()
+    # QualiaSpirit.metaevaluar() creaba cada vez un evaluador vacío, se inventaba una decisión
+    # "estado" con éxito (coherencia siempre 1.0) y evaluaba la ética sobre un impacto vacío
+    # (ethics 0.0, prob_exito 0.0 y aun así "cooperar"); el SelfModel del espíritu nadie lo
+    # alimenta (modules {}, self_organization 0.0). Se usan los datos reales de la metacognición.
+    so = _metacog.self_organization
+    intro = {"identity": dict(_spirit.self_model.identity),
+             "modules": sorted(set(so.active_modules)),
+             "traits": list(_metacog.self_model.traits),
+             "self_organization_score": _metacog.self_model.self_organization_score}
+    meta = {"coherence": coherence, "decisions": len(_metacog.logic.registro_reflexivo),
+            "proto_agency": _metacog.proto_agency,
+            "affective_tone": _spirit.estado_emocional.tono_general()}
     balance, arousal = affect_balance(_spirit.estado_emocional.emociones)
     return _plain({"name": _spirit.nombre, "emotions": _spirit.estado_emocional.emociones,
                    "tone": _spirit.estado_emocional.tono_general(), "mode": _mode(_spirit),
