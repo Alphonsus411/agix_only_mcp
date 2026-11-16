@@ -22,6 +22,7 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import curation  # noqa: E402
 import memory_scope  # noqa: E402
 
 # Se fija en main() según el proyecto de la sesión (cwd del evento); por defecto, la global.
@@ -69,20 +70,28 @@ def _decisions() -> list[dict]:
     return list(data.get("decisions", []))
 
 
+def _cur() -> dict:
+    return curation.load(DATA_DIR)
+
+
 def _narrative_rows() -> list[tuple[str, dict]]:
+    """Entradas vigentes de la autonarrativa (sin las retiradas ni fusionadas)."""
     db = DATA_DIR / "autonarrativa.db"
     if not db.exists():
         return []
     try:
         conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
         try:
-            rows = conn.execute("SELECT text, metadata FROM experiences ORDER BY id").fetchall()
+            rows = conn.execute("SELECT id, text, metadata FROM experiences ORDER BY id").fetchall()
         finally:
             conn.close()
     except sqlite3.Error:
         return []
+    cur = _cur()
     out = []
-    for text, meta in rows:
+    for row_id, text, meta in rows:
+        if curation.is_retired(cur, curation.narrative_id(row_id)):
+            continue
         try:
             out.append((text, json.loads(meta)))
         except (TypeError, ValueError):
@@ -103,11 +112,19 @@ def _qualia_tone() -> tuple[str | None, dict]:
     return None, {}
 
 
-def _decision_fields(e: dict) -> dict:
+def _decision_fields(e: dict, cur: dict) -> dict:
     res = e.get("resultado") or {}
     ctx = e.get("contexto") or {}
-    return {"action": e.get("accion"), "success": bool(res.get("exito")),
-            "lesson": res.get("leccion"), "goal": ctx.get("goal")}
+    did = curation.decision_id(e.get("timestamp"))
+    return {"id": did, "action": e.get("accion"), "success": bool(res.get("exito")),
+            "lesson": curation.lesson(cur, did, res.get("leccion")), "goal": ctx.get("goal"),
+            "retired": curation.is_retired(cur, did), "obsolete": curation.is_obsolete(cur, did),
+            "merged_into": (cur["retired"].get(did) or {}).get("merged_into"),
+            "repeats": curation.repeats(cur, did)}
+
+
+def _times(n: int) -> str:
+    return f" (×{n})" if n > 1 else ""
 
 
 # --------------------------------------------------------------------------- SessionStart
@@ -126,18 +143,32 @@ def session_context() -> str:
     if tone:
         lines.append(f"Tono emocional de Qualia: {tone}.")
 
-    decisions = [_decision_fields(e) for e in _decisions()]
+    cur = _cur()
+    decisions = [_decision_fields(e, cur) for e in _decisions()]
     if decisions:
+        # La coherencia es la de todo el historial, como en el servidor.
         ok = sum(d["success"] for d in decisions)
         lines.append(f"Coherencia: {ok}/{len(decisions)} decisiones acertadas ({ok / len(decisions):.0%}).")
-        failures = Counter(d["action"] for d in decisions if not d["success"] and d["action"])
+        # Errores repetidos: las fusionadas cuentan para la que las absorbió; las obsoletas, no.
+        by_id = {d["id"]: d for d in decisions}
+        failures: Counter = Counter()
+        for d in decisions:
+            if d["success"] or d["obsolete"]:
+                continue
+            target, seen = d, set()
+            while target["merged_into"] and target["merged_into"] in by_id and target["id"] not in seen:
+                seen.add(target["id"])
+                target = by_id[target["merged_into"]]
+            if target["action"] and not target["obsolete"]:
+                failures[target["action"]] += 1
         repeated = [a for a, n in failures.items() if n >= 2]
         if repeated:
             lines.append("Errores repetidos (evitar): " + "; ".join(repeated) + ".")
-        lessons = [d for d in decisions if d["lesson"]][-3:]
+        lessons = [d for d in decisions if d["lesson"] and not d["retired"]][-3:]
         if lessons:
             lines.append("Lecciones recientes:")
-            lines += [f"- {'✓' if d['success'] else '✗'} {d['action']}: {d['lesson']}" for d in lessons]
+            lines += [f"- {'✓' if d['success'] else '✗'} {d['action']}{_times(d['repeats'])}: {d['lesson']}"
+                      for d in lessons]
 
     rows = _narrative_rows()
     if rows:
@@ -153,9 +184,10 @@ def session_context() -> str:
                 parts.append("metas " + ", ".join(g for g, _ in goals.most_common(3)))
             lines.append("Autonarrativa: " + "; ".join(parts) + ".")
 
-    episodes = _episodes()
+    episodes = [e for e in _episodes()
+                if not curation.is_retired(cur, curation.episode_id(e.get("timestamp")))]
     if episodes:
-        lines.append(f"Memoria episódica: {len(episodes)} episodios (consulta agix_memory_search / agix_memory_timeline).")
+        lines.append(f"Memoria episódica: {len(episodes)} episodios vigentes (consulta agix_memory_search / agix_memory_timeline).")
 
     if not lines:
         return ""
@@ -173,22 +205,29 @@ def prompt_context(prompt: str, top: int = 3, min_matches: int = 2) -> str:
     if not query:
         return ""
     candidates: list[tuple[int, str]] = []
+    cur = _cur()
 
     for e in _episodes():
+        eid = curation.episode_id(e.get("timestamp"))
+        if curation.is_retired(cur, eid):
+            continue
         text = f"{e.get('entrada', '')} {e.get('decision', '')} {e.get('resultado', '')}"
         n = len(query & _tokens(text))
         if n >= min_matches:
             mark = "✓" if e.get("exito") else "✗"
-            candidates.append((n, f"[episodio {mark}] {e.get('entrada')} → {e.get('decision')} → {e.get('resultado')}"))
+            times = _times(curation.repeats(cur, eid))
+            candidates.append((n, f"[episodio {mark}{times}] {e.get('entrada')} → {e.get('decision')} → {e.get('resultado')}"))
 
     for e in _decisions():
-        d = _decision_fields(e)
+        d = _decision_fields(e, cur)
+        if d["retired"]:
+            continue
         text = f"{d['action'] or ''} {d['lesson'] or ''} {d['goal'] or ''}"
         n = len(query & _tokens(text))
         if n >= min_matches:
             mark = "✓" if d["success"] else "✗"
             lesson = f" — lección: {d['lesson']}" if d["lesson"] else ""
-            candidates.append((n, f"[decisión {mark}] {d['action']}{lesson}"))
+            candidates.append((n, f"[decisión {mark}{_times(d['repeats'])}] {d['action']}{lesson}"))
 
     for text, meta in _narrative_rows():
         tags = " ".join((meta.get("values") or []) + (meta.get("goals") or []))

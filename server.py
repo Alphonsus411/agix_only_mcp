@@ -31,6 +31,7 @@ log = logging.getLogger("agix-mcp")
 # lanza el servidor, antes del chdir. Con la memoria desactivada (.agix.json {"memoria": "off"})
 # se usa una carpeta temporal que se borra al salir: nada se lee ni se conserva.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import curation  # noqa: E402
 import memory_scope  # noqa: E402
 
 START_DIR = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
@@ -43,6 +44,8 @@ else:
     _TMP = tempfile.TemporaryDirectory(prefix="agix-off-", ignore_cleanup_errors=True)
     DATA_DIR = Path(_TMP.name).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+# Retiradas y fusiones de lecciones (curation.py): marcas aparte, AGIX no se entera.
+_cur = curation.load(DATA_DIR)
 # GestorDeMemoria solo acepta rutas dentro del cwd.
 os.chdir(DATA_DIR)
 MEMORY_FILE = "memoria.json"
@@ -117,6 +120,8 @@ Herramientas de AGIX (framework de Adolfo González) para apoyar el razonamiento
 - agix_fagi_index, agix_harmony, agix_simulate_agent: métricas y simulación de agentes.
 Las puntuaciones éticas/afectivas son heurísticas: tómalas como una segunda opinión, no como verdad.
 - agix_memory_scope: qué memoria usa este proyecto (global, propia del proyecto o desactivada).
+- agix_memory_retire / agix_memory_duplicates / agix_memory_merge: curación sin borrar nada;
+  retira lecciones obsoletas o erróneas (con motivo) y fusiona duplicados (revisa cada grupo).
 """
 INSTRUCTIONS += f"Memoria activa en esta sesión: {SCOPE.describe()}."
 if not SCOPE.enabled:
@@ -163,8 +168,20 @@ def _quiet():
 from datetime import datetime as _datetime, timezone as _timezone  # noqa: E402
 
 
+_last_stamp: _datetime | None = None
+
+
 def _utc_now_iso() -> str:
-    return _datetime.now(_timezone.utc).isoformat()
+    """Hora UTC estrictamente creciente: el reloj de Windows avanza a saltos y dos registros
+    seguidos podían compartir marca de tiempo, que es también su id (curation.py)."""
+    global _last_stamp
+    from datetime import timedelta
+
+    now = _datetime.now(_timezone.utc)
+    if _last_stamp is not None and now <= _last_stamp:
+        now = _last_stamp + timedelta(microseconds=1)
+    _last_stamp = now
+    return now.isoformat()
 
 
 def _to_utc(value, naive_is_local: bool = False) -> _datetime:
@@ -773,7 +790,19 @@ def agix_nash_equilibria(row_payoffs: list[list[float]], col_payoffs: list[list[
 
 
 def _exp_dict(e) -> dict:
-    return _plain(e)
+    d = _plain(e)
+    eid = curation.episode_id(e.timestamp)
+    d["id"] = eid
+    n = curation.repeats(_cur, eid)
+    if n > 1:
+        d["repeats"] = n
+    if curation.is_retired(_cur, eid):
+        d["retired"] = _cur["retired"][eid]
+    return d
+
+
+def _episode_active(e) -> bool:
+    return not curation.is_retired(_cur, curation.episode_id(e.timestamp))
 
 
 @server.tool()
@@ -830,9 +859,14 @@ def _score(query: str, text: str) -> float:
 
 @server.tool()
 def agix_memory_search(query: str, n: int = 5, only_success: bool | None = None) -> dict:
-    """Busca experiencias pasadas por palabras clave y similitud en todos los campos."""
+    """Busca experiencias pasadas por palabras clave y similitud en todos los campos.
+
+    No devuelve los episodios retirados (agix_memory_retire) ni los fusionados en otro.
+    """
     scored = []
     for e in _memory.experiencias:
+        if not _episode_active(e):
+            continue
         if only_success is not None and e.exito != only_success:
             continue
         blob = " ".join(str(x) for x in (e.entrada, e.decision, e.resultado, e.juicio_etico or ""))
@@ -846,10 +880,12 @@ def agix_memory_search(query: str, n: int = 5, only_success: bool | None = None)
 
 @server.tool()
 def agix_memory_recent(n: int = 10) -> dict:
-    """Devuelve las n experiencias más recientes y un resumen de aciertos/errores."""
+    """Devuelve las n experiencias más recientes (sin las retiradas) y el balance de aciertos
+    de todo el historial."""
     exps = _memory.experiencias
     ok = sum(1 for e in exps if e.exito)
-    return {"recent": [_exp_dict(e) for e in exps[-n:]], "total": len(exps),
+    active = [e for e in exps if _episode_active(e)]
+    return {"recent": [_exp_dict(e) for e in active[-n:]], "total": len(exps),
             "success_rate": round(ok / len(exps), 3) if exps else None}
 
 
@@ -866,17 +902,20 @@ def _parse_when(value: str, end: bool = False):
 
 @server.tool()
 def agix_memory_timeline(start: str, end: str | None = None, n: int = 50,
-                         only_success: bool | None = None) -> dict:
+                         only_success: bool | None = None, include_retired: bool = False) -> dict:
     """Episodios entre dos fechas en orden cronológico (memoria episódica).
 
     start / end: 'YYYY-MM-DD' o ISO 'YYYY-MM-DDTHH:MM:SS[+HH:MM]'; sin zona se entienden en UTC,
         que es la zona de todas las marcas de tiempo.
+    include_retired: incluir los episodios retirados o fusionados (llevan la clave "retired").
     Devuelve como mucho los n episodios más recientes del intervalo y el balance de aciertos.
     """
     lo = _parse_when(start)
     hi = _parse_when(end, end=True) if end else _datetime.max.replace(tzinfo=_timezone.utc)
     events = []
     for e in _memory.experiencias:
+        if not include_retired and not _episode_active(e):
+            continue
         try:
             ts = _to_utc(e.timestamp)
         except (TypeError, ValueError):
@@ -949,6 +988,8 @@ def agix_narrative_query(query: str, top: int = 5, filters: dict | None = None) 
         rows = _narrative.conn.execute("SELECT id, text, metadata, embedding FROM experiences").fetchall()
     scored = []
     for exp_id, text, meta_json, emb_blob in rows:
+        if curation.is_retired(_cur, curation.narrative_id(exp_id)):
+            continue
         meta = json.loads(meta_json)
         if filters and not all(meta.get(k) == v for k, v in filters.items()):
             continue
@@ -963,8 +1004,8 @@ def agix_narrative_query(query: str, top: int = 5, filters: dict | None = None) 
         scored.append((0.6 * overlap + 0.4 * cos, exp_id, text, meta))
     scored.sort(key=lambda x: x[0], reverse=True)
     return {"query": query, "total": len(rows),
-            "results": [{"id": i, "score": round(s, 3), "text": t, "metadata": m}
-                        for s, i, t, m in scored[:top]]}
+            "results": [{"id": i, "entry_id": curation.narrative_id(i), "score": round(s, 3),
+                         "text": t, "metadata": m} for s, i, t, m in scored[:top]]}
 
 
 def _ranked(counts: dict, top: int) -> list[dict]:
@@ -1290,10 +1331,45 @@ def agix_decision_record(
 
 
 def _decision_rows(events: list[dict]) -> list[dict]:
-    return [{"action": e.get("accion"), "success": bool((e.get("resultado") or {}).get("exito")),
-             "lesson": (e.get("resultado") or {}).get("leccion"),
-             "goal": (e.get("contexto") or {}).get("goal"), "timestamp": e.get("timestamp")}
-            for e in events]
+    rows = []
+    for e in events:
+        did = curation.decision_id(e.get("timestamp"))
+        row = {"id": did, "action": e.get("accion"),
+               "success": bool((e.get("resultado") or {}).get("exito")),
+               "lesson": curation.lesson(_cur, did, (e.get("resultado") or {}).get("leccion")),
+               "goal": (e.get("contexto") or {}).get("goal"), "timestamp": e.get("timestamp")}
+        n = curation.repeats(_cur, did)
+        if n > 1:
+            row["repeats"] = n
+        if curation.is_retired(_cur, did):
+            row["retired"] = _cur["retired"][did]
+        rows.append(row)
+    return rows
+
+
+def _decision_active(e: dict) -> bool:
+    return not curation.is_retired(_cur, curation.decision_id(e.get("timestamp")))
+
+
+def _repeated_errors(events: list[dict]) -> list[str]:
+    """Acciones que han fallado al menos dos veces. Cuentan las fusionadas (son repeticiones)
+    pero no las retiradas por obsoletas."""
+    counts: dict[str, int] = {}
+    for e in events:
+        did = curation.decision_id(e.get("timestamp"))
+        if curation.is_obsolete(_cur, did) or (e.get("resultado") or {}).get("exito"):
+            continue
+        target = did
+        while curation.is_retired(_cur, target):  # fusionada: cuenta para la que la absorbió
+            target = _cur["retired"][target]["merged_into"]
+        counts[target] = counts.get(target, 0) + 1
+    actions = {curation.decision_id(e.get("timestamp")): e.get("accion") for e in events}
+    by_action: dict[str, int] = {}
+    for did, n in counts.items():
+        action = actions.get(did)
+        if action:
+            by_action[action] = by_action.get(action, 0) + n
+    return sorted(a for a, n in by_action.items() if n >= 2)
 
 
 def _group_rate(rows: list[dict], key: str) -> dict:
@@ -1316,24 +1392,41 @@ def agix_decision_review(max_items: int = 20, store_in_narrative: bool = True) -
     Además del análisis de AGIX (aciertos, errores, tono emocional, resumen), devuelve las lecciones
     reales registradas, el acierto por acción y por meta, y las acciones que fallan repetidamente.
     store_in_narrative: guarda el resumen de la revisión en la autonarrativa persistente.
+    Solo revisa las decisiones vigentes: las retiradas o fusionadas (agix_memory_retire /
+    agix_memory_merge) no aparecen, y las lecciones consolidadas sustituyen a la original.
+    repeated_errors: acciones que han fallado ≥ 2 veces en todo el historial (como el hook de
+    inicio); cuentan las fusionadas, que son repeticiones de la que queda, y no las obsoletas.
     """
-    if store_in_narrative:
-        with _quiet(), _narrative_lock:
-            analysis = _metacog.review_decisions(max_items)
-    else:
-        with _quiet():
-            analysis = DecisionReviewer(_metacog.logic, AutonarrativeCore()).review(max_items)
-        _metacog.self_model.update_state("decision_review", analysis)
-    rows = _decision_rows(_metacog.logic.registro_reflexivo[-max_items:] if max_items > 0
-                          else _metacog.logic.registro_reflexivo)
-    by_action = _group_rate(rows, "action")
+    full = _metacog.logic.registro_reflexivo
+    active = [e for e in full if _decision_active(e)]
+    # El DecisionReviewer de AGIX lee el registro entero: se le enseña solo lo vigente, con las
+    # lecciones consolidadas, y se restaura después.
+    shown = []
+    for e in active:
+        did = curation.decision_id(e.get("timestamp"))
+        if did in _cur["lessons"]:
+            e = {**e, "resultado": {**(e.get("resultado") or {}), "leccion": _cur["lessons"][did]}}
+        shown.append(e)
+    _metacog.logic.registro_reflexivo = shown
+    try:
+        if store_in_narrative:
+            with _quiet(), _narrative_lock:
+                analysis = _metacog.review_decisions(max_items)
+        else:
+            with _quiet():
+                analysis = DecisionReviewer(_metacog.logic, AutonarrativeCore()).review(max_items)
+            _metacog.self_model.update_state("decision_review", analysis)
+    finally:
+        _metacog.logic.registro_reflexivo = full
+    picked = active[-max_items:] if max_items > 0 else active
+    rows = _decision_rows(picked)
     _save_metacog()
     return _plain({
         **analysis,
         "recorded_lessons": [r for r in rows if r["lesson"]],
-        "by_action": by_action,
+        "by_action": _group_rate(rows, "action"),
         "by_goal": _group_rate(rows, "goal"),
-        "repeated_errors": sorted(a for a, g in by_action.items() if g["errors"] >= 2),
+        "repeated_errors": _repeated_errors(full),
         "stored_in_narrative": store_in_narrative,
     })
 
@@ -1361,6 +1454,122 @@ def agix_metacognition_state(recent: int = 10) -> dict:
     })
 
 
+# --------------------------------------------------------------------------- curación
+
+
+def _curable_entries() -> dict[str, dict]:
+    """Todas las entradas que se pueden retirar o fusionar, por id."""
+    out: dict[str, dict] = {}
+    for e in _memory.experiencias:
+        out[curation.episode_id(e.timestamp)] = {
+            "text": f"{e.entrada} → {e.decision} → {e.resultado}", "success": bool(e.exito),
+            "timestamp": e.timestamp}
+    for e in _metacog.logic.registro_reflexivo:
+        did = curation.decision_id(e.get("timestamp"))
+        res = e.get("resultado") or {}
+        out[did] = {"text": f"{e.get('accion') or ''}: {curation.lesson(_cur, did, res.get('leccion')) or ''}",
+                    "success": bool(res.get("exito")), "timestamp": e.get("timestamp")}
+    with _narrative_lock:
+        rows = _narrative.conn.execute("SELECT id, text FROM experiences ORDER BY id").fetchall()
+    for row_id, text in rows:
+        out[curation.narrative_id(row_id)] = {"text": text, "success": None, "timestamp": row_id}
+    return out
+
+
+@server.tool()
+def agix_memory_retire(ids: list[str], reason: str = "", restore: bool = False) -> dict:
+    """Retira (o restaura) lecciones y recuerdos obsoletos o erróneos, sin borrarlos.
+
+    ids: identificadores que devuelven las demás herramientas ("id" / "entry_id"):
+        "e:<timestamp>" episodio, "d:<timestamp>" decisión, "n:<id>" autonarrativa.
+    reason: por qué ya no vale (obligatorio al retirar), p. ej. "el fallo se corrigió en 4fab2eb".
+    Una entrada retirada deja de salir en búsquedas, revisiones y hooks, pero sigue en el
+    historial (agix_memory_timeline con include_retired) y en la coherencia. restore=True la
+    vuelve a activar (también deshace una fusión de esa entrada).
+    """
+    if not ids:
+        raise ValueError("Indica al menos un id")
+    known = _curable_entries()
+    unknown = [i for i in ids if i not in known]
+    if unknown:
+        raise ValueError(f"Ids desconocidos: {unknown}. Usa los 'id' que devuelven las búsquedas")
+    if not restore and not reason.strip():
+        raise ValueError("Indica el motivo (reason) por el que la lección ya no vale")
+    changed = []
+    for i in ids:
+        if restore:
+            if curation.restore(_cur, i):
+                changed.append(i)
+        elif not curation.is_retired(_cur, i):
+            curation.retire(_cur, i, reason.strip())
+            changed.append(i)
+    curation.save(DATA_DIR, _cur)
+    return {"action": "restored" if restore else "retired", "changed": changed,
+            "unchanged": [i for i in ids if i not in changed],
+            "retired_total": len(_cur["retired"])}
+
+
+@server.tool()
+def agix_memory_duplicates(threshold: float = 0.6, kinds: list[str] | None = None) -> dict:
+    """Busca recuerdos y lecciones duplicados (solo consulta; no cambia nada).
+
+    Compara las entradas vigentes del mismo tipo (episodios, decisiones, autonarrativa) por las
+    palabras que comparten (Jaccard, sin tildes ni palabras vacías). Solo agrupa entradas con el
+    mismo resultado: un fallo y un acierto parecidos cuentan cosas distintas.
+    threshold: similitud mínima 0..1 (0.6 por defecto; más bajo = más candidatos y más dudosos).
+    kinds: ["e", "d", "n"] por defecto todos. Para fusionar un grupo: agix_memory_merge.
+    """
+    if not 0 < threshold <= 1:
+        raise ValueError("threshold debe estar entre 0 (excluido) y 1")
+    kinds = kinds or list(curation.KINDS)
+    entries = _curable_entries()
+    groups = []
+    for k in kinds:
+        if k not in curation.KINDS:
+            raise ValueError(f"Tipo desconocido {k!r}; opciones: {list(curation.KINDS)}")
+        items = [{"id": i, **v} for i, v in entries.items()
+                 if curation.kind(i) == k and not curation.is_retired(_cur, i)]
+        for g in curation.duplicate_groups(items, threshold):
+            groups.append({"kind": curation.KINDS[k], "suggested_keep": g[-1]["id"],
+                           "entries": [{"id": it["id"], "text": it["text"], "success": it["success"],
+                                        "similarity": it["similarity"]} for it in g]})
+    return {"threshold": threshold, "groups": groups,
+            "note": "Revisa cada grupo antes de fusionar: la similitud es léxica, no de significado."}
+
+
+@server.tool()
+def agix_memory_merge(keep: str, merge: list[str], lesson: str | None = None) -> dict:
+    """Fusiona duplicados en una sola entrada, sin borrar nada.
+
+    keep: id de la entrada que queda (suele ser la más reciente); merge: ids que se fusionan en
+    ella (mismo tipo: episodio, decisión o autonarrativa). Las fusionadas dejan de mostrarse y la
+    que queda cuenta sus repeticiones ("repeats"); para los errores repetidos siguen contando.
+    lesson: texto consolidado opcional que sustituye a la lección de `keep` (solo decisiones);
+        la original se conserva. Se deshace con agix_memory_retire(ids, restore=True).
+    """
+    entries = _curable_entries()
+    merge = [m for m in dict.fromkeys(merge) if m != keep]
+    if not merge:
+        raise ValueError("Indica al menos un id distinto de keep en merge")
+    unknown = [i for i in [keep, *merge] if i not in entries]
+    if unknown:
+        raise ValueError(f"Ids desconocidos: {unknown}")
+    if any(curation.kind(m) != curation.kind(keep) for m in merge):
+        raise ValueError("Solo se fusionan entradas del mismo tipo (e:, d: o n:)")
+    retired = [i for i in [keep, *merge] if curation.is_retired(_cur, i)]
+    if retired:
+        raise ValueError(f"Hay entradas ya retiradas o fusionadas: {retired}; restáuralas antes")
+    if lesson and curation.kind(keep) != "d":
+        raise ValueError("Solo las decisiones tienen lección consolidable (lesson)")
+    for m in merge:
+        curation.retire(_cur, m, f"duplicada de {keep}", merged_into=keep)
+    if lesson:
+        curation.set_lesson(_cur, keep, lesson.strip())
+    curation.save(DATA_DIR, _cur)
+    return {"kept": keep, "merged": merge, "repeats": curation.repeats(_cur, keep),
+            "lesson": curation.lesson(_cur, keep, None)}
+
+
 def _memory_evidence(memory: str | None) -> dict:
     """Respaldo de la memoria episódica para una voz: episodios cuya situación o decisión
     contienen `memory` (sin tildes ni mayúsculas), su balance de aciertos y su placer.
@@ -1371,8 +1580,10 @@ def _memory_evidence(memory: str | None) -> dict:
     q = _norm(memory or "").strip()
     if not q:
         return {"episodes": 0, "successes": 0, "failures": 0, "outcome": 0.0, "affect": 0.0}
+    # Los retirados por obsoletos no respaldan nada; los fusionados sí (son repeticiones).
     eps = [e for e in _memory.experiencias
-           if q in _norm(" ".join(str(x) for x in (e.entrada, e.decision)))]
+           if not curation.is_obsolete(_cur, curation.episode_id(e.timestamp))
+           and q in _norm(" ".join(str(x) for x in (e.entrada, e.decision)))]
     ok = sum(1 for e in eps if e.exito)
     placer = [float((e.emocion or {}).get("placer", 0.0)) for e in eps
               if isinstance(getattr(e, "emocion", None), dict)]

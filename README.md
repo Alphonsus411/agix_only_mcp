@@ -38,6 +38,27 @@ Por defecto todas las sesiones comparten la memoria global (`~/.agix-mcp`). Para
 - Las lecciones generales (p. ej. de git o PowerShell) no pasan de una memoria a otra: si las
   quieres en un proyecto con memoria propia, regístralas también allí.
 
+## Curación: retirar lecciones y fusionar duplicados
+
+La memoria crece con cada registro. Para que lo obsoleto o repetido no se siga inyectando, hay
+tres herramientas que **no borran nada**: las marcas se guardan en `curacion.json`, junto a los
+datos, y el formato de AGIX no cambia.
+
+- `agix_memory_retire(ids, reason)`: retira episodios (`e:<timestamp>`), decisiones
+  (`d:<timestamp>`) o entradas de la autonarrativa (`n:<id>`) obsoletas o erróneas, con su motivo.
+  Los ids los devuelven las búsquedas, la revisión y `agix_metacognition_state`. `restore=True`
+  las vuelve a activar.
+- `agix_memory_duplicates(threshold=0.6)`: solo consulta. Agrupa entradas vigentes del mismo tipo
+  y con el mismo resultado que comparten palabras (Jaccard). Es una medida léxica: con un umbral
+  más bajo (0.25–0.4) salen más candidatos, que hay que revisar uno a uno.
+- `agix_memory_merge(keep, merge, lesson)`: fusiona duplicados en `keep`, que cuenta sus
+  repeticiones (`repeats`, «×n» en los hooks); `lesson` consolida el texto de la lección.
+
+Efectos de una entrada retirada o fusionada: deja de salir en búsquedas, recientes, línea temporal
+(salvo `include_retired`), revisión de decisiones, deliberación y hooks. La coherencia y las
+estadísticas por meta siguen usando todo el historial. Para los errores repetidos, una fusionada
+cuenta como repetición de la que queda y una retirada por obsoleta deja de contar.
+
 ## Hooks y skill (uso automático)
 
 - **`hooks/agix_context.py`**: solo lee `~/.agix-mcp` (no importa agix, ~150 ms) y no imprime nada
