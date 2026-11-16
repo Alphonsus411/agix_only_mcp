@@ -146,6 +146,22 @@ def test_conflicto_el_respaldo_no_vence_una_preferencia_clara(server):
     assert r["winner"] == "A"
 
 
+def test_conflicto_el_arreglo_mencionado_en_un_fracaso_no_hereda_el_fracaso(server):
+    # Caso real: el resultado del commit fallido menciona el arreglo (-F) y ambas opciones
+    # quedaban respaldadas por ese fracaso y empataban
+    server.agix_memory_record("Commit con un here-string de PowerShell con comillas",
+                              "Ejecutar git commit -m con el here-string",
+                              "PowerShell partió el mensaje; se repitió con git commit -F", False,
+                              emotion={"placer": -0.3, "activacion": 0.4, "dominancia": -0.1})
+    r = server.agix_resolve_internal_conflict([
+        {"text": "-m con here-string", "weight": 0.5, "memory": "here-string de PowerShell"},
+        {"text": "-F desde archivo", "weight": 0.5, "memory": "git commit -F"},
+    ])
+    assert r["memory_backed"] == ["-m con here-string"]
+    assert r["evidence"]["-F desde archivo"]["episodes"] == 0
+    assert r["winner"] == "-F desde archivo" and r["resolved"]
+
+
 def test_conflicto_palabra_sin_episodios_no_respalda(server):
     r = server.agix_resolve_internal_conflict([
         {"text": "A", "weight": 0.5}, {"text": "B", "weight": 0.5, "memory": "nada parecido"}])

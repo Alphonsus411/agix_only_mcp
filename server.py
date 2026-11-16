@@ -1255,13 +1255,17 @@ def agix_metacognition_state(recent: int = 10) -> dict:
 
 
 def _memory_evidence(memory: str | None) -> dict:
-    """Respaldo de la memoria episódica para una voz: episodios cuya situación, decisión o
-    resultado contienen `memory` (sin tildes ni mayúsculas), su balance de aciertos y su placer."""
+    """Respaldo de la memoria episódica para una voz: episodios cuya situación o decisión
+    contienen `memory` (sin tildes ni mayúsculas), su balance de aciertos y su placer.
+
+    El resultado no se busca: el éxito o fracaso es del episodio entero, y un resultado como
+    "falló; se repitió con X" haría que X heredara un fracaso que no es suyo.
+    """
     q = _norm(memory or "").strip()
     if not q:
         return {"episodes": 0, "successes": 0, "failures": 0, "outcome": 0.0, "affect": 0.0}
     eps = [e for e in _memory.experiencias
-           if q in _norm(" ".join(str(x) for x in (e.entrada, e.decision, e.resultado)))]
+           if q in _norm(" ".join(str(x) for x in (e.entrada, e.decision)))]
     ok = sum(1 for e in eps if e.exito)
     placer = [float((e.emocion or {}).get("placer", 0.0)) for e in eps
               if isinstance(getattr(e, "emocion", None), dict)]
@@ -1275,7 +1279,8 @@ def agix_resolve_internal_conflict(hypotheses: list[dict], threshold: float = 0.
     """Delibera entre voces internas apoyándose en la memoria episódica.
 
     hypotheses: [{"text": str, "weight": 0..1, "memory": str opcional}, ...]
-    "memory" se busca en los episodios registrados (situación, decisión, resultado). Cada voz puntúa
+    "memory" se busca en la situación y la decisión de los episodios registrados (no en el
+    resultado, que puede mencionar la alternativa que sí funcionó). Cada voz puntúa
         peso + 0.2·resultado + 0.1·tono
     resultado = (aciertos − fallos) / episodios coincidentes ∈ [-1, 1]: un recuerdo de fracaso resta.
     tono = placer medio registrado en esos episodios ∈ [-1, 1].
