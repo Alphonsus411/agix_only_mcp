@@ -12,7 +12,8 @@ claude mcp add --scope user agix -e PYTHONIOENCODING=utf-8 -- "%CD%\.venv\Script
 
 Datos persistentes en `%USERPROFILE%\.agix-mcp` (cambiable con `AGIX_MCP_DATA`):
 `memoria.json` (experiencias), `ontologia.json` (conceptos), `qualia_config.json`,
-`qualia_estado.json` + `qualia_modelos.json` (espíritu Qualia y sus pesos aprendidos) y `suenos.json`.
+`qualia_estado.json` + `qualia_modelos.json` (espíritu Qualia y sus pesos aprendidos), `suenos.json`
+y `autonarrativa.db` + `autonarrativa_scores.json`.
 
 ## Herramientas
 
@@ -22,7 +23,11 @@ Datos persistentes en `%USERPROFILE%\.agix-mcp` (cambiable con `AGIX_MCP_DATA`):
 | `agix_verify_expression` | `evaluation.formal.verifier` | sat/unsat en dominio {-1,0,1} |
 | `agix_fuzzy_infer` | scikit-fuzzy | Mamdani con términos bajo/medio/alto |
 | `agix_nash_equilibria` | nashpy | Equilibrios de Nash de cualquier juego bimatricial |
-| `agix_memory_record/search/recent` | `GestorDeMemoria` | Memoria persistente de experiencias (búsqueda por palabras clave + similitud) |
+| `agix_memory_record/search/recent` | `EpisodicMemory` (+ `GestorDeMemoria`) | Memoria episódica persistente (búsqueda por palabras clave sin tildes + similitud) |
+| `agix_memory_timeline` | `EpisodicMemory` | Episodios entre fechas (UTC), en orden y con balance de aciertos |
+| `agix_memory_narrative` | `NarrativeMemoryTree` | Resumen narrativo jerárquico con pérdida (se reconstruye al arrancar) |
+| `agix_narrative_store/query` | `AutonarrativeCore` | Autonarrativa en SQLite con valores, metas y afectos; búsqueda top-k puntuada |
+| `agix_narrative_self` / `agix_narrative_evaluate_action` | `AutonarrativeCore.SelfModel` | Modelo de sí mismo y encaje de una acción con esa identidad |
 | `agix_ontology_add/query` | `memory.symbolic.Ontology` | Grafo persistente, cierre transitivo de relaciones y herencia de atributos |
 | `agix_ethics_judge` | `AlignmentInterface` + marcos | Eco, utilitarista, deontológico, virtudes |
 | `agix_intention_evaluate` | `IntentionEvaluator` | Consecuencias, conflicto de metas, conducta |
@@ -64,3 +69,9 @@ Tests: `.venv\Scripts\python -m pytest tests -q`.
 - `NeuroSymbolicBridge`/`ConceptClassifier` usan vectores aleatorios (no semánticos); `QualiaEngine` requiere torch/jax.
 - `EthicalDilemmaSimulator.simulate_scenario` ignora el texto de entrada.
 - `GestorDeMemoria.buscar_similar` usa difflib sobre la cadena completa: casi no encuentra consultas cortas.
+- `AutonarrativeCore` persiste las experiencias en SQLite pero no su `SelfModel`: el MCP lo reconstruye
+  desde la base de datos al arrancar. Su embedding son frecuencias de letras ASCII (ignora ñ y tildes) y
+  `query_experiences` devuelve todo sin puntuación; el MCP añade coincidencia de palabras y top-k.
+  La conexión se abre en el hilo de importación; el MCP la reabre con `check_same_thread=False` y un lock.
+- `NarrativeMemoryTree` no se persiste y descarta episodios intermedios al llenarse (K=2, D=3 conserva
+  los primeros y los últimos); el MCP lo reconstruye reinsertando los episodios en orden.

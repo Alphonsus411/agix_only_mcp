@@ -36,7 +36,8 @@ ONTOLOGY_FILE = DATA_DIR / "ontologia.json"
 with contextlib.redirect_stdout(sys.stderr):
     import agix.memory  # noqa: F401  (evita la importación circular de reasoning)
     import numpy as np
-    from agix.memory import GestorDeMemoria
+    from agix.memory import EpisodicMemory, GestorDeMemoria  # noqa: F401
+    from agix.autonarrative import AutonarrativeCore, Experience
     from agix.memory.symbolic import Ontology
     from agix.reasoning.logic_core import Fact
     from agix.evaluation.formal.verifier import verify as agix_verify
@@ -72,6 +73,9 @@ Herramientas de AGIX (framework de Adolfo González) para apoyar el razonamiento
 - agix_fuzzy_infer: decisiones con lógica difusa (riesgo, prioridad, confianza).
 - agix_nash_equilibria: equilibrios de Nash de juegos bimatriciales.
 - agix_memory_*: memoria persistente de experiencias entre sesiones (decisión, resultado, lección).
+- agix_memory_timeline / agix_memory_narrative: línea temporal y resumen narrativo de los episodios.
+- agix_narrative_*: autonarrativa persistente (experiencias con valores, metas y afectos), modelo de
+  sí mismo y evaluación de si una acción encaja con esa identidad.
 - agix_ontology_*: grafo persistente de conceptos, atributos y relaciones.
 - agix_ethics_judge / agix_intention_evaluate / agix_meta_evaluate / agix_goal_register:
   evaluación ética e intencional; requieren que traduzcas el plan a puntuaciones 0..1.
@@ -119,13 +123,57 @@ def _quiet():
 
 # --------------------------------------------------------------------------- estado
 
-_memory = GestorDeMemoria()
+# Memoria episódica: registro completo (GestorDeMemoria, memoria.json) + árbol narrativo resumido.
+_memory = EpisodicMemory()
 if Path(MEMORY_FILE).exists():
     try:
         with _quiet():
             _memory.cargar(MEMORY_FILE)
     except Exception as exc:  # memoria corrupta: no bloquear el servidor
         log.warning("No se pudo cargar la memoria: %s", exc)
+
+
+def _episode_fragment(e) -> str:
+    return f"{e.timestamp}: {e.entrada} -> {e.resultado}"
+
+
+# El árbol narrativo no se persiste en AGIX: se reconstruye reinsertando los episodios en orden.
+for _e in _memory.experiencias:
+    _memory.insert(_episode_fragment(_e))
+
+# Autonarrativa: experiencias en SQLite + SelfModel (valores, metas, afectos) derivado de ellas.
+NARRATIVE_DB = DATA_DIR / "autonarrativa.db"
+NARRATIVE_SCORES = DATA_DIR / "autonarrativa_scores.json"
+_narrative = AutonarrativeCore(str(NARRATIVE_DB))
+# AGIX abre la conexión en el hilo de importación; las herramientas pueden ejecutarse en otros hilos.
+import sqlite3 as _sqlite3  # noqa: E402
+import threading as _threading  # noqa: E402
+
+_narrative.conn.close()
+_narrative.conn = _sqlite3.connect(str(NARRATIVE_DB), check_same_thread=False)
+_narrative_lock = _threading.Lock()
+
+
+def _replay_narrative_self_model() -> None:
+    """AGIX no persiste el SelfModel: se reconstruye a partir de la base de datos."""
+    for _text, meta in _narrative.conn.execute("SELECT text, metadata FROM experiences ORDER BY id"):
+        _narrative.self_model.update_self_model(Experience(_text, json.loads(meta)))
+    if NARRATIVE_SCORES.exists():
+        scores = json.loads(NARRATIVE_SCORES.read_text(encoding="utf-8"))
+        _narrative.self_model.planning_score = scores.get("planning_score", 0.5)
+        _narrative.self_model.motivation_score = scores.get("motivation_score", 0.5)
+
+
+def _save_narrative_scores() -> None:
+    sm = _narrative.self_model
+    NARRATIVE_SCORES.write_text(json.dumps({"planning_score": sm.planning_score,
+                                            "motivation_score": sm.motivation_score}), encoding="utf-8")
+
+
+try:
+    _replay_narrative_self_model()
+except Exception as exc:
+    log.warning("No se pudo reconstruir el modelo autonarrativo: %s", exc)
 
 _ontology = Ontology()
 
@@ -537,23 +585,34 @@ def agix_memory_record(
     ethical_judgment: str | None = None,
     emotion: dict[str, float] | None = None,
 ) -> dict:
-    """Registra una experiencia en la memoria persistente de AGIX (memoria.json).
+    """Registra un episodio en la memoria episódica persistente de AGIX (memoria.json).
 
     situation: contexto o problema; decision: qué se hizo; outcome: qué pasó / lección.
     emotion: opcional, p. ej. {"placer": 0.2, "activacion": 0.5, "dominancia": 0.1}.
+    Además del registro completo, añade un fragmento al árbol narrativo (agix_memory_narrative)
+    y queda disponible en la línea temporal (agix_memory_timeline).
     """
     with _quiet():
-        exp = _memory.registrar(situation, decision, outcome, success,
-                                juicio_etico=ethical_judgment, emocion=emotion)
+        exp = _memory.store_episode(situation, decision, outcome, success,
+                                    juicio_etico=ethical_judgment, emocion=emotion)
         _memory.guardar(MEMORY_FILE)
     return {"stored": _exp_dict(exp), "total": len(_memory.experiencias)}
 
 
+def _norm(text: str) -> str:
+    """Minúsculas sin tildes, para comparar palabras con y sin acento."""
+    import unicodedata
+
+    nfkd = unicodedata.normalize("NFKD", (text or "").lower())
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
 def _score(query: str, text: str) -> float:
-    q = set(re.findall(r"\w+", query.lower()))
-    t = set(re.findall(r"\w+", (text or "").lower()))
+    qn, tn = _norm(query), _norm(text)
+    q = set(re.findall(r"\w+", qn))
+    t = set(re.findall(r"\w+", tn))
     overlap = len(q & t) / len(q) if q else 0.0
-    return 0.7 * overlap + 0.3 * SequenceMatcher(None, query.lower(), (text or "").lower()).ratio()
+    return 0.7 * overlap + 0.3 * SequenceMatcher(None, qn, tn).ratio()
 
 
 @server.tool()
@@ -579,6 +638,160 @@ def agix_memory_recent(n: int = 10) -> dict:
     ok = sum(1 for e in exps if e.exito)
     return {"recent": [_exp_dict(e) for e in exps[-n:]], "total": len(exps),
             "success_rate": round(ok / len(exps), 3) if exps else None}
+
+
+def _parse_when(value: str, end: bool = False):
+    """Acepta 'YYYY-MM-DD' o ISO completo. Una fecha sola como fin abarca todo ese día."""
+    from datetime import datetime, timedelta
+
+    dt = datetime.fromisoformat(value)
+    if end and len(value) == 10:
+        dt = dt + timedelta(days=1) - timedelta(microseconds=1)
+    return dt
+
+
+@server.tool()
+def agix_memory_timeline(start: str, end: str | None = None, n: int = 50,
+                         only_success: bool | None = None) -> dict:
+    """Episodios entre dos fechas en orden cronológico (memoria episódica).
+
+    start / end: 'YYYY-MM-DD' o ISO 'YYYY-MM-DDTHH:MM:SS'. Las marcas de tiempo están en UTC.
+    Devuelve como mucho los n episodios más recientes del intervalo y el balance de aciertos.
+    """
+    from datetime import datetime
+
+    lo = _parse_when(start)
+    hi = _parse_when(end, end=True) if end else datetime.max
+    events = []
+    for e in _memory.experiencias:
+        try:
+            ts = datetime.fromisoformat(e.timestamp)
+        except (TypeError, ValueError):
+            continue
+        if lo <= ts <= hi and (only_success is None or e.exito == only_success):
+            events.append((ts, e))
+    events.sort(key=lambda x: x[0])
+    picked = events[-n:]
+    ok = sum(1 for _, e in events if e.exito)
+    return {"start": start, "end": end, "count": len(events),
+            "success_rate": round(ok / len(events), 3) if events else None,
+            "episodes": [_exp_dict(e) for _, e in picked], "truncated": len(events) > len(picked)}
+
+
+@server.tool()
+def agix_memory_narrative() -> dict:
+    """Resumen narrativo jerárquico de la memoria episódica (NarrativeMemoryTree de AGIX).
+
+    Es un resumen con pérdida: conserva los primeros episodios y los más recientes y va
+    olvidando los intermedios; el árbol crece en profundidad al llenarse. El registro completo
+    está en agix_memory_timeline / agix_memory_search.
+    """
+    tree = _memory.tree
+    return {"narrative": _memory.retrieve(), "nodes": tree.node_count() - 1,
+            "capacity": tree.capacity(), "load_factor": round(tree.load_factor(), 3),
+            "depth": tree.D, "branching": tree.K, "episodes_total": len(_memory.experiencias)}
+
+
+# --------------------------------------------------------------------------- autonarrativa
+
+
+def _as_list(value) -> list[str]:
+    if value is None:
+        return []
+    return [value] if isinstance(value, str) else [str(v) for v in value]
+
+
+@server.tool()
+def agix_narrative_store(
+    text: str,
+    values: list[str] | None = None,
+    goals: list[str] | None = None,
+    affects: list[str] | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    """Añade una experiencia a la autonarrativa (AutonarrativeCore, SQLite persistente).
+
+    text: la experiencia contada en primera persona o como hecho.
+    values / goals / affects: palabras clave (una palabra cada una, p. ej. "calidad", "estabilidad",
+        "alivio"); alimentan el modelo de sí mismo que usa agix_narrative_evaluate_action.
+    metadata: datos libres adicionales, filtrables por igualdad en agix_narrative_query.
+    """
+    meta = dict(metadata or {})
+    meta.update({"values": _as_list(values), "goals": _as_list(goals),
+                 "affective_states": _as_list(affects)})
+    with _quiet(), _narrative_lock:
+        exp_id = _narrative.store_experience(Experience(text, meta))
+    return {"id": exp_id, "self_model": _narrative_self_summary(top=5)}
+
+
+@server.tool()
+def agix_narrative_query(query: str, top: int = 5, filters: dict | None = None) -> dict:
+    """Busca en la autonarrativa las experiencias más relevantes para una consulta.
+
+    Puntuación: 0.6 coincidencia de palabras (sin tildes, también en valores/metas/afectos)
+    + 0.4 similitud del embedding de AGIX. filters: igualdad exacta sobre metadata.
+    """
+    q_emb = _narrative._embed(query)
+    with _narrative_lock:
+        rows = _narrative.conn.execute("SELECT id, text, metadata, embedding FROM experiences").fetchall()
+    scored = []
+    for exp_id, text, meta_json, emb_blob in rows:
+        meta = json.loads(meta_json)
+        if filters and not all(meta.get(k) == v for k, v in filters.items()):
+            continue
+        emb = np.frombuffer(emb_blob, dtype=np.float32)
+        denom = float(np.linalg.norm(q_emb) * np.linalg.norm(emb))
+        cos = float(np.dot(q_emb, emb)) / denom if denom else 0.0
+        tags = " ".join(_as_list(meta.get("values")) + _as_list(meta.get("goals"))
+                        + _as_list(meta.get("affective_states")))
+        q = set(re.findall(r"\w+", _norm(query)))
+        t = set(re.findall(r"\w+", _norm(f"{text} {tags}")))
+        overlap = len(q & t) / len(q) if q else 0.0
+        scored.append((0.6 * overlap + 0.4 * cos, exp_id, text, meta))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return {"query": query, "total": len(rows),
+            "results": [{"id": i, "score": round(s, 3), "text": t, "metadata": m}
+                        for s, i, t, m in scored[:top]]}
+
+
+def _ranked(counts: dict, top: int) -> list[dict]:
+    return [{"name": k, "count": v} for k, v in sorted(counts.items(), key=lambda kv: -kv[1])[:top]]
+
+
+def _narrative_self_summary(top: int = 10) -> dict:
+    sm = _narrative.self_model
+    return {"values": _ranked(sm.values, top), "goals": _ranked(sm.goals, top),
+            "affects": _ranked(sm.affective_states, top),
+            "planning_score": round(sm.planning_score, 3),
+            "motivation_score": round(sm.motivation_score, 3),
+            "experiences": len(sm.history)}
+
+
+@server.tool()
+def agix_narrative_self(top: int = 10) -> dict:
+    """Modelo de sí mismo derivado de la autonarrativa: valores, metas y afectos más frecuentes,
+    y las puntuaciones de planificación y motivación."""
+    return _narrative_self_summary(top)
+
+
+@server.tool()
+def agix_narrative_evaluate_action(action: str) -> dict:
+    """Evalúa si una acción encaja con la identidad narrativa (valores, metas, afectos).
+
+    compatibility = palabras de la acción que coinciden con valores/metas/afectos ÷ palabras totales.
+    Efecto acumulativo de AGIX: cada evaluación sube planning_score si toca metas (o lo baja 0.05)
+    y motivation_score si toca afectos; ambos persisten entre sesiones.
+    """
+    tokens = _norm(action).split()
+    sm = _narrative.self_model
+    known = {_norm(k): k for k in list(sm.values) + list(sm.goals) + list(sm.affective_states)}
+    # AGIX compara palabras exactas: se traducen las variantes sin tilde a la forma registrada
+    normalized = " ".join(known.get(re.sub(r"\W", "", t), t) for t in tokens)
+    with _quiet():
+        result = _narrative.evaluate_action(normalized)
+    _save_narrative_scores()
+    matched = sorted({known[k] for k in (re.sub(r"\W", "", t) for t in tokens) if k in known})
+    return {**result, "matched": matched}
 
 
 # --------------------------------------------------------------------------- ontología
