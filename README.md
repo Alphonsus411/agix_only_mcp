@@ -210,3 +210,10 @@ como UTC y convierte a UTC los sueños antiguos (hora local de esta máquina), p
   `DecisionReviewer` genera lecciones genéricas ("Mejorar acción 'X'"); el MCP conserva la lección real.
 - `NarrativeMemoryTree` no se persiste y descarta episodios intermedios al llenarse (K=2, D=3 conserva
   los primeros y los últimos); el MCP lo reconstruye reinsertando los episodios en orden.
+
+
+### Aislamiento estricto de memoria (optativo)
+
+En equipos compartidos o corporativos se puede definir `AGIX_MCP_REQUIRE_SCOPE=1` en el entorno del servidor MCP **y** de los hooks de Claude Code. Con esta opción, cuando no existe un archivo `.agix.json` válido en el directorio del proyecto o sus ancestros, la memoria persistente queda desactivada en lugar de usar la global. Para habilitar memoria por proyecto, crear `.agix.json` con `{"memoria":"nombre-proyecto"}`; `{"memoria":"global"}` permite expresamente la memoria compartida y `{"memoria":"off"}` la desactiva.
+
+**Importante:** `AGIX_MCP_DATA` tiene prioridad y fuerza la ruta indicada incluso en modo estricto. Revisar esta variable antes de activar el aislamiento. Los procesos MCP y hooks deben recibir la misma configuración de entorno. Reiniciar los clientes MCP tras cambiar variables o código. Hacer copia de seguridad de la memoria antes de actualizar; no copiar información confidencial de clientes a memorias personales.
