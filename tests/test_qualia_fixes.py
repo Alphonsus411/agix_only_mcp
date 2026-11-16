@@ -203,6 +203,43 @@ def test_la_emocion_sentida_no_se_atenua_pero_las_demas_si():
     assert sp.estado_emocional.emociones["alegría"] == pytest.approx(alegria * sp.atenuacion)
 
 
+def test_prediccion_en_la_escala_de_las_emociones():
+    # Antes: emociones ~0.3–0.4 y predicción ~0.00–0.04
+    sp = QualiaSpirit("X", plasticidad=True)
+    with contextlib.redirect_stdout(io.StringIO()):
+        for ev in [("a", 0.9, "curiosidad"), ("b", 0.6, "miedo"), ("c", 0.85, "alegría"),
+                   ("d", 0.4, "sorpresa"), ("e", 0.7, "alegría")]:
+            sp.experimentar(*ev)
+    actual = sp.estado_emocional.emociones
+    pred = sp.predecir_futuro()
+    for e, v in actual.items():
+        assert 0.0 <= pred[e] <= 1.0
+        assert pred[e] == pytest.approx(v, abs=0.15)
+
+
+def test_predecir_no_tiene_efectos_secundarios():
+    sp = QualiaSpirit("X")
+    sp.experimentar("a", 0.5, "alegría")
+    sp.experimentar("b", 0.8, "miedo")
+    primera = sp.predecir_futuro()
+    assert sp.predecir_futuro() == primera
+    assert sp.predecir_futuro() == primera
+
+
+def test_la_rnn_aprende_una_tendencia():
+    # Una emoción que decae siempre igual: la predicción debe acabar por debajo del actual
+    sp = QualiaSpirit("X", atenuacion=0.8)
+    sp.experimentar("inicio", 0.9, "alegría")
+    sp.predictor.learning_rate = 0.2
+    for i in range(60):
+        sp.experimentar(f"miedo {i}", 0.0, "miedo")
+    actual = sp.estado_emocional.emociones["alegría"]
+    sp.estado_emocional.emociones["alegría"] = 0.5
+    sp._historial_vectores[-1][sp.emotion_order.index("alegría")] = 0.5
+    assert sp.predecir_futuro()["alegría"] < 0.5
+    assert actual < 0.01
+
+
 # --------------------------------------------------------------- RNN
 
 
