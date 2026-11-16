@@ -62,6 +62,17 @@ Datos persistentes en `%USERPROFILE%\.agix-mcp` (cambiable con `AGIX_MCP_DATA`):
 | `agix_dream_record` / `agix_dreams_recent` | `DreamBank` | Banco de sueños persistente |
 | `agix_fagi_index`, `agix_harmony`, `agix_simulate_agent` | `evaluation`, `AutoAgent` | Métricas y simulación |
 
+## Límites de entrada
+
+Para que ninguna llamada deje el servidor colgado (antes `9**9**9 == 0`, 25 variables o
+`episodes=100000` bloqueaban el MCP), estas herramientas rechazan con un error claro:
+
+- `agix_verify_expression`: más de 500 caracteres, más de 8 variables (3^8 asignaciones), más de
+  3 potencias o un exponente que no sea una variable o un número de valor absoluto ≤ 16.
+  Peor caso permitido: ~1.5 s.
+- `agix_simulate_agent`: observations ≤ 100, actions ≤ 20, episodes ≤ 1000, max_steps ≤ 10000 y
+  episodes × max_steps ≤ 100000. Peor caso permitido: ~2 s.
+
 ## Correcciones locales de AGIX (solo en este `.venv`)
 
 La copia de agix instalada en `.venv` lleva correcciones que **no están en el repositorio de AGIX**.

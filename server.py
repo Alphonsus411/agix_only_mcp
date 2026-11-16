@@ -589,6 +589,49 @@ def agix_logic_infer(
     return result
 
 
+# Límites de agix_verify_expression: el verificador de AGIX prueba 3^n asignaciones y calcula
+# potencias sin tope, así que una expresión larga, con muchas variables o con una torre de
+# potencias (9**9**9) dejaba el servidor colgado.
+VERIFY_MAX_LENGTH = 500
+VERIFY_MAX_VARIABLES = 8  # 3^8 = 6561 asignaciones
+VERIFY_MAX_POWERS = 3
+VERIFY_MAX_EXPONENT = 16
+# Mismo criterio que el verificador de AGIX para contar variables.
+_VERIFY_NAME = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]*")
+
+
+def _check_verify_limits(expression: str) -> None:
+    import ast
+
+    if len(expression) > VERIFY_MAX_LENGTH:
+        raise ValueError(f"Expresión demasiado larga ({len(expression)} caracteres; "
+                         f"máximo {VERIFY_MAX_LENGTH})")
+    names = {v for v in _VERIFY_NAME.findall(expression)
+             if not re.fullmatch(r"True|False|and|or|not", v)}
+    if len(names) > VERIFY_MAX_VARIABLES:
+        raise ValueError(f"Demasiadas variables ({len(names)}; máximo {VERIFY_MAX_VARIABLES}): "
+                         f"se probarían 3^{len(names)} asignaciones")
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError:
+        return  # el verificador de AGIX devuelve 'unknown'
+
+    def small_exponent(node: ast.AST) -> bool:
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            node = node.operand
+        if isinstance(node, ast.Name):  # una variable vale -1, 0 o 1
+            return True
+        return (isinstance(node, ast.Constant) and isinstance(node.value, (int, float))
+                and abs(node.value) <= VERIFY_MAX_EXPONENT)
+
+    powers = [n for n in ast.walk(tree) if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Pow)]
+    if len(powers) > VERIFY_MAX_POWERS:
+        raise ValueError(f"Demasiadas potencias ({len(powers)}; máximo {VERIFY_MAX_POWERS})")
+    if not all(small_exponent(p.right) for p in powers):
+        raise ValueError("El exponente de una potencia debe ser una variable o un número de valor "
+                         f"absoluto ≤ {VERIFY_MAX_EXPONENT} (no otra potencia ni una operación)")
+
+
 @server.tool()
 def agix_verify_expression(expression: str) -> dict:
     """Comprueba si una expresión aritmética/booleana en Python es satisfacible.
@@ -596,7 +639,10 @@ def agix_verify_expression(expression: str) -> dict:
     Usa el verificador formal de AGIX: prueba todas las asignaciones de variables en {-1, 0, 1}.
     Devuelve 'sat', 'unsat' o 'unknown'. 'unsat' solo es fiable dentro de ese dominio.
     Ej.: "x + y == 2 and x != y".
+    Límites (para que no se cuelgue): 500 caracteres, 8 variables, 3 potencias y exponentes que
+    sean una variable o un número de valor absoluto ≤ 16.
     """
+    _check_verify_limits(expression)
     with _quiet():
         res = agix_verify(expression)
     return {"expression": expression, "result": res, "domain": [-1, 0, 1],
@@ -1774,11 +1820,35 @@ def agix_harmony(goals_vs_actions: float, emotions_vs_actions: float, identity_v
     return _plain({"score": score, "diagnosis": diag})
 
 
+# Límites de agix_simulate_agent: sin tope una llamada podía bloquear el servidor durante
+# minutos. El coste crece con los pasos y, más deprisa, con los episodios cuando hay muchas
+# observaciones (10000 episodios con 1000 observaciones tardaban 155 s). Peor caso permitido
+# (100 observaciones, 20 acciones, 1000 episodios × 100 pasos): unos 2 s.
+SIM_MAX_OBSERVATIONS = 100
+SIM_MAX_ACTIONS = 20
+SIM_MAX_EPISODES = 1000
+SIM_MAX_STEPS = 10_000
+SIM_MAX_TOTAL_STEPS = 100_000
+
+
 @server.tool()
 def agix_simulate_agent(observations: int = 10, actions: int = 4, episodes: int = 3,
                         max_steps: int = 5, seed: int | None = None) -> dict:
-    """Simula un GeneticAgent de AGIX en ToyEnvironment con AutoAgent y devuelve sus métricas."""
+    """Simula un GeneticAgent de AGIX en ToyEnvironment con AutoAgent y devuelve sus métricas.
+
+    Límites (para que no se cuelgue): observations ≤ 100, actions ≤ 20, episodes ≤ 1000,
+    max_steps ≤ 10000 y episodes × max_steps ≤ 100000 (unos 2 s como mucho).
+    """
     import random
+
+    for name, value, top in (("observations", observations, SIM_MAX_OBSERVATIONS),
+                             ("actions", actions, SIM_MAX_ACTIONS),
+                             ("episodes", episodes, SIM_MAX_EPISODES),
+                             ("max_steps", max_steps, SIM_MAX_STEPS)):
+        if not 1 <= value <= top:
+            raise ValueError(f"{name} debe estar entre 1 y {top} (recibido {value})")
+    if episodes * max_steps > SIM_MAX_TOTAL_STEPS:
+        raise ValueError(f"episodes × max_steps = {episodes * max_steps}; máximo {SIM_MAX_TOTAL_STEPS}")
 
     from agix.agents.genetic import GeneticAgent
     from agix.autoagent import AutoAgent
