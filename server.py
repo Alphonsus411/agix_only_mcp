@@ -228,7 +228,68 @@ DEFAULT_QUALIA_CONFIG = {
     "energia": 0.6,
     "atenuacion": 0.9,
     "plasticidad": True,
+    "modos": "balance",  # "balance" (experimental) o "suma" (criterio original de AGIX)
 }
+
+# --- Modos por balance afectivo (experimental) -------------------------------
+# El criterio original de AGIX compara SUMAS absolutas (total > 1.5 → euforia; tristeza+miedo
+# > 0.8 → desconexión): con varias emociones activas la euforia salta casi siempre, sin mirar
+# su signo, y el espíritu oscila entre extremos. Aquí se usan:
+#   balance  = (positivas − negativas) / (positivas + negativas)   ∈ [-1, 1]
+#   activación = intensidad media de las emociones activas          ∈ [0, 1]
+# con histéresis (umbral de entrada más exigente que el de salida) para no saltar de modo
+# en cada experiencia. Las emociones sin valencia conocida (sorpresa...) solo cuentan en la
+# activación.
+POSITIVE_EMOTIONS = {"alegria", "curiosidad", "gozo", "serenidad", "satisfaccion", "entusiasmo",
+                     "alivio", "amor", "gratitud", "orgullo", "calma", "confianza", "esperanza"}
+NEGATIVE_EMOTIONS = {"tristeza", "miedo", "enojo", "ira", "frustracion", "culpa", "ansiedad",
+                     "remordimiento", "verguenza", "asco", "desesperanza"}
+MODE_THRESHOLDS = {
+    "euforia_entrada": (0.5, 0.5),   # balance > 0.5 y activación > 0.5
+    "euforia_salida": (0.3, 0.4),    # sale si balance < 0.3 o activación < 0.4
+    "desconexion_entrada": -0.4,     # balance < -0.4 (o activación < 0.1: apatía)
+    "desconexion_salida": -0.2,      # sale si balance > -0.2 y activación >= 0.15
+}
+
+
+def _strip_accents(text: str) -> str:
+    import unicodedata
+
+    nfkd = unicodedata.normalize("NFKD", text.lower())
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+def affect_balance(emotions: dict[str, float]) -> tuple[float, float]:
+    """(balance, activación) de un conjunto de emociones."""
+    active = {k: v for k, v in emotions.items() if v > 0.05}
+    if not active:
+        return 0.0, 0.0
+    pos = sum(v for k, v in active.items() if _strip_accents(k) in POSITIVE_EMOTIONS)
+    neg = sum(v for k, v in active.items() if _strip_accents(k) in NEGATIVE_EMOTIONS)
+    balance = (pos - neg) / (pos + neg) if pos + neg > 0 else 0.0
+    return balance, sum(active.values()) / len(active)
+
+
+class BalancedQualiaSpirit(QualiaSpirit):
+    """QualiaSpirit cuyos modos dependen del balance afectivo, con histéresis."""
+
+    def experimentar(self, evento: str, carga: float, tipo_emocion="sorpresa"):
+        was_euphoric, was_disconnected = self.modo_euforia, self.modo_desconexion
+        super().experimentar(evento, carga, tipo_emocion)  # aplica también el criterio original
+        balance, arousal = affect_balance(self.estado_emocional.emociones)
+        t = MODE_THRESHOLDS
+        if was_disconnected:
+            disconnected = not (balance > t["desconexion_salida"] and arousal >= 0.15)
+        else:
+            disconnected = balance < t["desconexion_entrada"] or arousal < 0.1
+        if disconnected:
+            euphoric = False
+        elif was_euphoric:
+            euphoric = balance >= t["euforia_salida"][0] and arousal >= t["euforia_salida"][1]
+        else:
+            euphoric = balance > t["euforia_entrada"][0] and arousal > t["euforia_entrada"][1]
+        self.modo_desconexion, self.modo_euforia = disconnected, euphoric
+        self.ultimo_balance = (balance, arousal)
 
 _RNN_PARAMS = ("Wxh", "Whh", "bh", "Wf", "Wi", "Wc", "Wo", "bf", "bi", "bc", "bo", "Why", "by")
 
@@ -245,12 +306,13 @@ def _load_qualia_config() -> dict:
 
 def _new_spirit(cfg: dict) -> QualiaSpirit:
     personality = PersonalityProfile(cfg["optimismo"], cfg["introversion"], cfg["energia"])
-    return QualiaSpirit(nombre=cfg["nombre"], plasticidad=bool(cfg["plasticidad"]),
-                        personality=personality, atenuacion=float(cfg["atenuacion"]))
+    cls = BalancedQualiaSpirit if cfg.get("modos", "balance") == "balance" else QualiaSpirit
+    return cls(nombre=cfg["nombre"], plasticidad=bool(cfg["plasticidad"]),
+               personality=personality, atenuacion=float(cfg["atenuacion"]))
 
 
 def _save_models(sp: QualiaSpirit) -> None:
-    data: dict[str, Any] = {}
+    data: dict[str, Any] = {"modos": {"euforia": sp.modo_euforia, "desconexion": sp.modo_desconexion}}
     if sp.plasticidad is not None and sp.plasticidad.model is not None:
         data["plasticidad"] = {"order": sp.plasticidad.emotion_order,
                                "weights": sp.plasticidad.model.weights.tolist()}
@@ -268,6 +330,9 @@ def _load_models(sp: QualiaSpirit) -> None:
     if not QUALIA_MODELS.exists():
         return
     data = json.loads(QUALIA_MODELS.read_text(encoding="utf-8"))
+    modes = data.get("modos") or {}
+    sp.modo_euforia = bool(modes.get("euforia", False))
+    sp.modo_desconexion = bool(modes.get("desconexion", False))
     if "plasticidad" in data and sp.plasticidad is not None:
         pl = data["plasticidad"]
         n = len(pl["order"])
@@ -1230,9 +1295,10 @@ def agix_qualia_experience(event: str, charge: float, emotion: str) -> dict:
         reflection = _spirit.reflexionar()
         prediction = _spirit.predecir_futuro()
     _save_spirit()
+    balance, arousal = affect_balance(_spirit.estado_emocional.emociones)
     return _plain({"reflection": reflection, "emotions": _spirit.estado_emocional.emociones,
                    "tone": _spirit.estado_emocional.tono_general(), "mode": _mode(_spirit),
-                   "predicted_next": prediction})
+                   "balance": balance, "arousal": arousal, "predicted_next": prediction})
 
 
 @server.tool()
@@ -1244,8 +1310,10 @@ def agix_qualia_state(diary_entries: int = 20) -> dict:
         prediction = _spirit.predecir_futuro()
         intro = _spirit.introspeccionar()
     intro = {k: v for k, v in intro.items() if k != "state"}
+    balance, arousal = affect_balance(_spirit.estado_emocional.emociones)
     return _plain({"name": _spirit.nombre, "emotions": _spirit.estado_emocional.emociones,
                    "tone": _spirit.estado_emocional.tono_general(), "mode": _mode(_spirit),
+                   "balance": balance, "arousal": arousal,
                    "predicted_next": prediction, "learned_associations": _associations(_spirit),
                    "diary": _spirit.diario()[-diary_entries:], "diary_total": len(_spirit.diario()),
                    "introspection": intro, "config": _load_qualia_config(), "meta": meta})
@@ -1260,11 +1328,14 @@ def agix_qualia_configure(
     introversion: float | None = None,
     energy: float | None = None,
     reset: bool = False,
+    modes: str | None = None,
 ) -> dict:
     """Configura el espíritu Qualia.
 
     decay: factor de atenuación (0..1]; 1.0 = las emociones no decaen. Se aplica al momento.
     plasticity: activa/desactiva la plasticidad hebbiana. Se aplica al momento.
+    modes: criterio de euforia/desconexión: "balance" (positivas vs negativas, con histéresis;
+        experimental) o "suma" (criterio original de AGIX). Se aplica al momento.
     name, optimism, introversion, energy (0..1): identidad y personalidad; solo se aplican al
         renacer el espíritu, así que requieren reset=True.
     reset: borra emociones, diario y modelos aprendidos y crea un espíritu nuevo con la configuración.
@@ -1277,6 +1348,10 @@ def agix_qualia_configure(
         cfg["atenuacion"] = float(decay)
     if plasticity is not None:
         cfg["plasticidad"] = bool(plasticity)
+    if modes is not None:
+        if modes not in ("balance", "suma"):
+            raise ValueError('modes debe ser "balance" o "suma"')
+        cfg["modos"] = modes
     identity = {"nombre": name, "optimismo": optimism, "introversion": introversion, "energia": energy}
     identity = {k: v for k, v in identity.items() if v is not None}
     for k, v in identity.items():
@@ -1294,6 +1369,8 @@ def agix_qualia_configure(
         _meta.spirit = _spirit
     else:
         _spirit.atenuacion = cfg["atenuacion"]
+        # Mismo estado, distinto criterio de modos: basta con cambiar la clase
+        _spirit.__class__ = BalancedQualiaSpirit if cfg.get("modos", "balance") == "balance" else QualiaSpirit
         if cfg["plasticidad"] and _spirit.plasticidad is None:
             _spirit.plasticidad = EmotionalPlasticity()
         elif not cfg["plasticidad"]:
