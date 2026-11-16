@@ -42,6 +42,8 @@ class Scope:
             return f"memoria de AGIX desactivada en este proyecto{why}"
         if self.name == "global":
             return "memoria global de AGIX"
+        if self.name == "AGIX_MCP_DATA":
+            return f"memoria de AGIX en {self.data_dir} (fijada con AGIX_MCP_DATA)"
         return f"memoria de AGIX del proyecto «{self.name}»"
 
 

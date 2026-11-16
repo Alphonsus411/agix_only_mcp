@@ -38,6 +38,27 @@ Por defecto todas las sesiones comparten la memoria global (`~/.agix-mcp`). Para
 - Las lecciones generales (p. ej. de git o PowerShell) no pasan de una memoria a otra: si las
   quieres en un proyecto con memoria propia, regístralas también allí.
 
+## Varias sesiones a la vez, corrupción y copias de seguridad
+
+Cada sesión de Claude Code arranca su propio servidor y todos comparten la carpeta de datos.
+`storage.py` evita que se pisen:
+
+- **Bloqueo entre procesos** (`.agix.lock`): cada herramienta se ejecuta con el bloqueo tomado y
+  tras recargar lo que otras sesiones hayan escrito. Antes, cada servidor reescribía el archivo
+  con su copia en memoria y el último borraba los registros de los demás.
+- **Escritura atómica**: temporal + sustitución, con reintentos (en Windows la sustitución falla
+  mientras otro proceso, p. ej. un hook, tiene el archivo abierto).
+- **Archivos corruptos**: se apartan como `<archivo>.corrupto-<fecha>` y se avisa en
+  `agix_memory_scope` (`storage_problems`); nunca se sobrescriben con una memoria vacía.
+- **Copia diaria** en `backups/AAAA-MM-DD` al arrancar el primer servidor del día (se conservan 7;
+  los JSON corruptos no se copian; SQLite se copia con su API de copia).
+- Las marcas de tiempo son estrictamente crecientes también entre sesiones (son el id de cada
+  registro).
+
+Límites: el espíritu Qualia es un único estado de ánimo y gana la última sesión que lo guarde;
+la autonarrativa es SQLite (admite varias sesiones), pero el modelo de sí mismo de cada servidor
+solo incorpora lo de otras sesiones al reiniciarse.
+
 ## Curación: retirar lecciones y fusionar duplicados
 
 La memoria crece con cada registro. Para que lo obsoleto o repetido no se siga inyectando, hay

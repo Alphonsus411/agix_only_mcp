@@ -33,6 +33,7 @@ log = logging.getLogger("agix-mcp")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import curation  # noqa: E402
 import memory_scope  # noqa: E402
+import storage  # noqa: E402
 
 START_DIR = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
 SCOPE = memory_scope.resolve(START_DIR)
@@ -44,8 +45,18 @@ else:
     _TMP = tempfile.TemporaryDirectory(prefix="agix-off-", ignore_cleanup_errors=True)
     DATA_DIR = Path(_TMP.name).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+# Varias sesiones comparten la carpeta (storage.py): copia diaria antes de tocar nada.
+if SCOPE.enabled:
+    with storage.lock(DATA_DIR):
+        storage.daily_backup(DATA_DIR)
 # Retiradas y fusiones de lecciones (curation.py): marcas aparte, AGIX no se entera.
+storage.read_json(DATA_DIR / curation.FILE)  # si está corrupto, se aparta (no se sobrescribe)
 _cur = curation.load(DATA_DIR)
+
+
+def _save_cur() -> None:
+    curation.save(DATA_DIR, _cur)
+    _seen[DATA_DIR / curation.FILE] = storage.mtime(DATA_DIR / curation.FILE)
 # GestorDeMemoria solo acepta rutas dentro del cwd.
 os.chdir(DATA_DIR)
 MEMORY_FILE = "memoria.json"
@@ -130,6 +141,32 @@ if not SCOPE.enabled:
 
 server = MCPServer(name="agix", version="1.0.0", instructions=INSTRUCTIONS)
 
+# Cada llamada a una herramienta se ejecuta con el bloqueo de la carpeta de datos y tras
+# recargar lo que otras sesiones hayan escrito (_sync): así ninguna sesión pisa los registros
+# de otra. Las herramientas tardan como mucho un par de segundos (ver límites de entrada).
+import functools as _functools  # noqa: E402
+
+_register_tool = server.tool
+
+
+def _tool(*args, **kwargs):
+    register = _register_tool(*args, **kwargs)
+
+    def decorate(fn):
+        @_functools.wraps(fn)
+        def call(*a, **kw):
+            with storage.lock(DATA_DIR):
+                _sync()
+                return fn(*a, **kw)
+
+        register(call)
+        return call
+
+    return decorate
+
+
+server.tool = _tool
+
 # --------------------------------------------------------------------------- utilidades
 
 
@@ -171,9 +208,21 @@ from datetime import datetime as _datetime, timezone as _timezone  # noqa: E402
 _last_stamp: _datetime | None = None
 
 
+def _see_stamp(value) -> None:
+    """Las marcas nuevas serán posteriores a esta (también a las escritas por otras sesiones)."""
+    global _last_stamp
+    try:
+        dt = _to_utc(value)
+    except (TypeError, ValueError):
+        return
+    if _last_stamp is None or dt > _last_stamp:
+        _last_stamp = dt
+
+
 def _utc_now_iso() -> str:
     """Hora UTC estrictamente creciente: el reloj de Windows avanza a saltos y dos registros
-    seguidos podían compartir marca de tiempo, que es también su id (curation.py)."""
+    seguidos (de esta sesión o de otra) podían compartir marca de tiempo, que es también su id
+    (curation.py)."""
     global _last_stamp
     from datetime import timedelta
 
@@ -200,26 +249,52 @@ def _to_utc_iso(value, naive_is_local: bool = False):
         return value  # ilegible: se deja como estaba
 
 
-# Memoria episódica: registro completo (GestorDeMemoria, memoria.json) + árbol narrativo resumido.
-_memory = EpisodicMemory()
-if Path(MEMORY_FILE).exists():
-    try:
-        with _quiet():
-            _memory.cargar(MEMORY_FILE)
-    except Exception as exc:  # memoria corrupta: no bloquear el servidor
-        log.warning("No se pudo cargar la memoria: %s", exc)
-for _e in _memory.experiencias:  # episodios antiguos: UTC sin zona → UTC explícito
-    if _e.timestamp:
-        _e.timestamp = _to_utc_iso(_e.timestamp)
+# Memoria episódica: registro completo (memoria.json, formato de GestorDeMemoria) + árbol
+# narrativo resumido. Se lee y escribe aquí (no con cargar/guardar de AGIX) para que la escritura
+# sea atómica y un archivo corrupto se aparte en vez de sobrescribirse con una memoria vacía.
+from dataclasses import asdict as _asdict  # noqa: E402
+
+from agix.memory.experiential import Experiencia as _Experiencia  # noqa: E402
+
+MEMORY_PATH = DATA_DIR / MEMORY_FILE
 
 
 def _episode_fragment(e) -> str:
     return f"{e.timestamp}: {e.entrada} -> {e.resultado}"
 
 
-# El árbol narrativo no se persiste en AGIX: se reconstruye reinsertando los episodios en orden.
-for _e in _memory.experiencias:
-    _memory.insert(_episode_fragment(_e))
+def _load_memory() -> None:
+    global _memory
+    mem = EpisodicMemory()
+    data = storage.read_json(MEMORY_PATH, {}) or {}
+    for d in data.get("experiencias", []) if isinstance(data, dict) else []:
+        try:
+            e = _Experiencia(**d)
+        except TypeError as exc:
+            log.warning("Episodio ilegible, se omite: %s", exc)
+            continue
+        if e.timestamp:  # episodios antiguos: UTC sin zona → UTC explícito
+            e.timestamp = _to_utc_iso(e.timestamp)
+            _see_stamp(e.timestamp)
+        mem.experiencias.append(e)
+    mem.dialogos = list(data.get("dialogos", [])) if isinstance(data, dict) else []
+    # El árbol narrativo no se persiste en AGIX: se reconstruye reinsertando los episodios.
+    for e in mem.experiencias:
+        mem.insert(_episode_fragment(e))
+    _memory = mem
+
+
+def _save_memory() -> None:
+    data = {"experiencias": [{**_asdict(e), "emocion": e.emocion if not hasattr(e.emocion, "__dataclass_fields__")
+                              else _asdict(e.emocion)} for e in _memory.experiencias],
+            "dialogos": _memory.dialogos}
+    storage.write_json(MEMORY_PATH, data)
+    _seen[MEMORY_PATH] = storage.mtime(MEMORY_PATH)
+
+
+_seen: dict[Path, int | None] = {}  # mtime de cada archivo la última vez que esta sesión lo leyó
+_load_memory()
+_seen[MEMORY_PATH] = storage.mtime(MEMORY_PATH)
 
 # Autonarrativa: experiencias en SQLite + SelfModel (valores, metas, afectos) derivado de ellas.
 NARRATIVE_DB = DATA_DIR / "autonarrativa.db"
@@ -238,16 +313,16 @@ def _replay_narrative_self_model() -> None:
     """AGIX no persiste el SelfModel: se reconstruye a partir de la base de datos."""
     for _text, meta in _narrative.conn.execute("SELECT text, metadata FROM experiences ORDER BY id"):
         _narrative.self_model.update_self_model(Experience(_text, json.loads(meta)))
-    if NARRATIVE_SCORES.exists():
-        scores = json.loads(NARRATIVE_SCORES.read_text(encoding="utf-8"))
+    scores = storage.read_json(NARRATIVE_SCORES)
+    if isinstance(scores, dict):
         _narrative.self_model.planning_score = scores.get("planning_score", 0.5)
         _narrative.self_model.motivation_score = scores.get("motivation_score", 0.5)
 
 
 def _save_narrative_scores() -> None:
     sm = _narrative.self_model
-    NARRATIVE_SCORES.write_text(json.dumps({"planning_score": sm.planning_score,
-                                            "motivation_score": sm.motivation_score}), encoding="utf-8")
+    storage.write_json(NARRATIVE_SCORES, {"planning_score": sm.planning_score,
+                                          "motivation_score": sm.motivation_score}, indent=None)
 
 
 try:
@@ -259,9 +334,11 @@ _ontology = Ontology()
 
 
 def _load_ontology() -> None:
-    if not ONTOLOGY_FILE.exists():
+    global _ontology
+    _ontology = Ontology()
+    data = storage.read_json(ONTOLOGY_FILE, {})
+    if not isinstance(data, dict):
         return
-    data = json.loads(ONTOLOGY_FILE.read_text(encoding="utf-8"))
     for name, c in data.items():
         concept = _ontology.conceptualize(name)
         concept.attributes.update(c.get("attributes", {}))
@@ -277,13 +354,15 @@ def _save_ontology() -> None:
         n: {"attributes": c.attributes, "relations": c.relations}
         for n, c in _ontology.concepts.items()
     }
-    ONTOLOGY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    storage.write_json(ONTOLOGY_FILE, data)
+    _seen[ONTOLOGY_FILE] = storage.mtime(ONTOLOGY_FILE)
 
 
 try:
     _load_ontology()
 except Exception as exc:
     log.warning("No se pudo cargar la ontología: %s", exc)
+_seen[ONTOLOGY_FILE] = storage.mtime(ONTOLOGY_FILE)
 
 # --- Espíritu Qualia persistente --------------------------------------------
 QUALIA_CONFIG = DATA_DIR / "qualia_config.json"
@@ -366,11 +445,9 @@ _RNN_PARAMS = ("Wxh", "Whh", "bh", "Wf", "Wi", "Wc", "Wo", "bf", "bi", "bc", "bo
 
 def _load_qualia_config() -> dict:
     cfg = dict(DEFAULT_QUALIA_CONFIG)
-    if QUALIA_CONFIG.exists():
-        try:
-            cfg.update(json.loads(QUALIA_CONFIG.read_text(encoding="utf-8")))
-        except Exception as exc:
-            log.warning("Configuración de Qualia ilegible, uso la de por defecto: %s", exc)
+    data = storage.read_json(QUALIA_CONFIG)
+    if isinstance(data, dict):
+        cfg.update(data)
     return cfg
 
 
@@ -393,13 +470,13 @@ def _save_models(sp: QualiaSpirit) -> None:
             "params": {n: getattr(p, n).tolist() for n in _RNN_PARAMS if hasattr(p, n)},
             "history": [v.tolist() for v in sp._historial_vectores],
         }
-    QUALIA_MODELS.write_text(json.dumps(data), encoding="utf-8")
+    storage.write_json(QUALIA_MODELS, data, indent=None)
 
 
 def _load_models(sp: QualiaSpirit) -> None:
-    if not QUALIA_MODELS.exists():
+    data = storage.read_json(QUALIA_MODELS)
+    if not isinstance(data, dict):
         return
-    data = json.loads(QUALIA_MODELS.read_text(encoding="utf-8"))
     modes = data.get("modos") or {}
     sp.modo_euforia = bool(modes.get("euforia", False))
     sp.modo_desconexion = bool(modes.get("desconexion", False))
@@ -421,8 +498,13 @@ def _load_models(sp: QualiaSpirit) -> None:
 
 def _save_spirit() -> None:
     try:
+        # AGIX escribe directamente sobre el archivo: se le hace escribir un temporal y se
+        # sustituye de golpe, para que un corte no deje el estado a medias.
+        tmp = f"{QUALIA_STATE}.{os.getpid()}.tmp"
         with _quiet():
-            _spirit.guardar_estado(QUALIA_STATE)
+            _spirit.guardar_estado(tmp)
+        storage.write_text(DATA_DIR / QUALIA_STATE, (DATA_DIR / tmp).read_text(encoding="utf-8"))
+        (DATA_DIR / tmp).unlink(missing_ok=True)
         _save_models(_spirit)
     except Exception as exc:  # la persistencia no debe romper la herramienta
         log.warning("No se pudo guardar el estado de Qualia: %s", exc)
@@ -431,7 +513,7 @@ def _save_spirit() -> None:
 def _load_spirit() -> QualiaSpirit:
     cfg = _load_qualia_config()
     sp = _new_spirit(cfg)
-    if Path(QUALIA_STATE).exists():
+    if Path(QUALIA_STATE).exists() and storage.read_json(DATA_DIR / QUALIA_STATE) is not None:
         try:
             with _quiet():
                 sp.cargar_estado(QUALIA_STATE)
@@ -445,18 +527,33 @@ _spirit = _load_spirit()
 _meta = DynamicMetaEvaluator(spirit=_spirit)
 _goals = GoalEngine()
 _dreams = DreamBank()
-try:
-    _dreams.importar(DREAMS_FILE)
+DREAMS_PATH = DATA_DIR / DREAMS_FILE
+
+
+def _save_dreams() -> None:
+    storage.write_json(DREAMS_PATH, _dreams.suenos)
+    _seen[DREAMS_PATH] = storage.mtime(DREAMS_PATH)
+
+
+def _load_dreams() -> None:
+    data = storage.read_json(DREAMS_PATH, [])
+    _dreams.suenos = list(data) if isinstance(data, list) else []
     # DreamBank guardaba la hora local sin zona: se convierte a UTC explícito y se persiste
-    _migrated = False
-    for _s in _dreams.suenos:
-        _new = _to_utc_iso(_s.get("timestamp"), naive_is_local=True)
-        if _new != _s.get("timestamp"):
-            _s["timestamp"], _migrated = _new, True
-    if _migrated:
-        _dreams.exportar(DREAMS_FILE)
+    migrated = False
+    for s in _dreams.suenos:
+        new = _to_utc_iso(s.get("timestamp"), naive_is_local=True)
+        if new != s.get("timestamp"):
+            s["timestamp"], migrated = new, True
+    if migrated:
+        _save_dreams()
+
+
+try:
+    with storage.lock(DATA_DIR):
+        _load_dreams()
 except Exception as exc:
     log.warning("No se pudo cargar el banco de sueños: %s", exc)
+_seen[DREAMS_PATH] = storage.mtime(DREAMS_PATH)
 _loop: SyntheticLoop | None = None
 
 # --------------------------------------------------------------------------- razonamiento lógico
@@ -628,12 +725,14 @@ def agix_logic_infer(
 
 @server.tool()
 def agix_memory_scope() -> dict:
-    """Qué memoria de AGIX usa esta sesión y por qué.
+    """Qué memoria de AGIX usa esta sesión y por qué, sus copias de seguridad diarias (backups/)
+    y los problemas de almacenamiento detectados (p. ej. un archivo corrupto apartado).
 
     Cada proyecto puede tener memoria propia con un archivo .agix.json en su carpeta (o en una
     superior): {"memoria": "nombre"} usa ~/.agix-mcp/proyectos/nombre, {"memoria": "global"} la
     global y {"memoria": "off"} ninguna. Sin archivo, la global. AGIX_MCP_DATA manda sobre todo.
     """
+    backups = DATA_DIR / storage.BACKUP_DIR
     return {
         "memory": SCOPE.name,
         "description": SCOPE.describe(),
@@ -642,6 +741,8 @@ def agix_memory_scope() -> dict:
         "decided_by": SCOPE.source,
         "problem": SCOPE.problem,
         "project_dir": START_DIR,
+        "backups": sorted(d.name for d in backups.iterdir() if d.is_dir()) if backups.exists() else [],
+        "storage_problems": list(storage.problems),
     }
 
 
@@ -825,7 +926,7 @@ def agix_memory_record(
         exp = _memory.store_episode(situation, decision, outcome, success,
                                     juicio_etico=ethical_judgment, timestamp=_utc_now_iso(),
                                     emocion=emotion)
-        _memory.guardar(MEMORY_FILE)
+    _save_memory()
     return {"stored": _exp_dict(exp), "total": len(_memory.experiencias)}
 
 
@@ -1241,17 +1342,19 @@ def _save_metacog() -> None:
     data = {"decisions": _metacog.logic.registro_reflexivo, "active_modules": so.active_modules,
             "dependencies": so.dependencies, "activation_times": so.activation_times,
             "last_review": _metacog.self_model.state.get("decision_review")}
-    METACOG_FILE.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+    storage.write_json(METACOG_FILE, data, indent=None)
+    _seen[METACOG_FILE] = storage.mtime(METACOG_FILE)
 
 
 def _load_metacog() -> None:
-    if not METACOG_FILE.exists():
-        return
-    data = json.loads(METACOG_FILE.read_text(encoding="utf-8"))
+    data = storage.read_json(METACOG_FILE, {})
+    if not isinstance(data, dict):
+        data = {}
     _metacog.logic.registro_reflexivo = list(data.get("decisions", []))
     for ev in _metacog.logic.registro_reflexivo:  # decisiones antiguas: UTC sin zona → explícito
         if isinstance(ev, dict) and ev.get("timestamp"):
             ev["timestamp"] = _to_utc_iso(ev["timestamp"])
+            _see_stamp(ev["timestamp"])
     so = _metacog.self_organization
     so.active_modules = list(data.get("active_modules", []))
     so.dependencies = dict(data.get("dependencies", {}))
@@ -1265,6 +1368,7 @@ try:
     _load_metacog()
 except Exception as exc:
     log.warning("No se pudo cargar la metacognición: %s", exc)
+_seen[METACOG_FILE] = storage.mtime(METACOG_FILE)
 
 
 def _stamp_last_decision() -> dict:
@@ -1503,7 +1607,7 @@ def agix_memory_retire(ids: list[str], reason: str = "", restore: bool = False) 
         elif not curation.is_retired(_cur, i):
             curation.retire(_cur, i, reason.strip())
             changed.append(i)
-    curation.save(DATA_DIR, _cur)
+    _save_cur()
     return {"action": "restored" if restore else "retired", "changed": changed,
             "unchanged": [i for i in ids if i not in changed],
             "retired_total": len(_cur["retired"])}
@@ -1565,7 +1669,7 @@ def agix_memory_merge(keep: str, merge: list[str], lesson: str | None = None) ->
         curation.retire(_cur, m, f"duplicada de {keep}", merged_into=keep)
     if lesson:
         curation.set_lesson(_cur, keep, lesson.strip())
-    curation.save(DATA_DIR, _cur)
+    _save_cur()
     return {"kept": keep, "merged": merge, "repeats": curation.repeats(_cur, keep),
             "lesson": curation.lesson(_cur, keep, None)}
 
@@ -1888,7 +1992,7 @@ def agix_dream_record(content: str, emotion: str, intensity: float) -> dict:
     """Guarda un sueño, visión o recuerdo simbólico en el DreamBank persistente (suenos.json)."""
     _dreams.registrar_sueno(content, emotion, float(intensity))
     _dreams.suenos[-1]["timestamp"] = _utc_now_iso()  # DreamBank usa la hora local sin zona
-    _dreams.exportar(DREAMS_FILE)
+    _save_dreams()
     return {"stored": _dreams.suenos[-1], "total": len(_dreams.suenos)}
 
 
@@ -1906,28 +2010,61 @@ IDENTITY_FILE = DATA_DIR / "identidad.json"
 
 
 def _load_identity() -> SyntheticIdentity:
-    data = {}
-    if IDENTITY_FILE.exists():
-        try:
-            data = json.loads(IDENTITY_FILE.read_text(encoding="utf-8"))
-        except Exception as exc:
-            log.warning("Identidad ilegible, se crea una nueva: %s", exc)
+    data = storage.read_json(IDENTITY_FILE, {})
+    if not isinstance(data, dict):
+        data = {}
     ident = SyntheticIdentity(data.get("nombre", _load_qualia_config()["nombre"]),
                               data.get("origen", "AGIX MCP"), dict(data.get("atributos", {})))
     ident.historia = list(data.get("historia", []))
+    _metacog.self_model.traits = []
     for trait in data.get("rasgos", []):
         _metacog.self_model.add_trait(trait)
+    _metacog.self_model.identity["name"] = ident.nombre
     return ident
 
 
 def _save_identity() -> None:
     data = {"nombre": _identity.nombre, "origen": _identity.origen, "atributos": _identity.atributos,
             "historia": _identity.historia, "rasgos": _metacog.self_model.traits}
-    IDENTITY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    storage.write_json(IDENTITY_FILE, data)
+    _seen[IDENTITY_FILE] = storage.mtime(IDENTITY_FILE)
 
 
 _identity = _load_identity()
-_metacog.self_model.identity["name"] = _identity.nombre
+_seen[IDENTITY_FILE] = storage.mtime(IDENTITY_FILE)
+_seen[DATA_DIR / curation.FILE] = storage.mtime(DATA_DIR / curation.FILE)
+
+
+def _sync() -> None:
+    """Recarga lo que otras sesiones hayan escrito desde la última vez (se llama con el bloqueo
+    tomado, antes de cada herramienta). Como toda escritura ocurre con el bloqueo y justo después
+    de un _sync, el disco tiene siempre lo de esta sesión más lo de las demás: basta recargar.
+
+    El espíritu Qualia y la autonarrativa no se recargan: Qualia es un único estado de ánimo
+    (gana la última sesión que lo guarde) y la autonarrativa es SQLite, que ya admite varias
+    sesiones (su modelo de sí mismo se reconstruye al arrancar).
+    """
+    global _identity, _cur
+    reloads = {
+        MEMORY_PATH: _load_memory,
+        METACOG_FILE: _load_metacog,
+        ONTOLOGY_FILE: _load_ontology,
+        DREAMS_PATH: _load_dreams,
+        DATA_DIR / curation.FILE: lambda: None,
+        IDENTITY_FILE: lambda: None,
+    }
+    for path, reload in reloads.items():
+        current = storage.mtime(path)
+        if current == _seen.get(path):
+            continue
+        if path == IDENTITY_FILE:
+            _identity = _load_identity()
+        elif path == DATA_DIR / curation.FILE:
+            data = storage.read_json(path)
+            _cur = curation.load(DATA_DIR) if data is not None else curation.empty()
+        else:
+            reload()
+        _seen[path] = storage.mtime(path)
 
 
 @server.tool()

@@ -53,10 +53,9 @@ def load(data_dir: Path) -> dict:
 
 
 def save(data_dir: Path, cur: dict) -> None:
-    path = Path(data_dir) / FILE
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    import storage  # escritura atómica con reintentos (Windows)
+
+    storage.write_json(Path(data_dir) / FILE, cur)
 
 
 # --------------------------------------------------------------------------- identificadores
