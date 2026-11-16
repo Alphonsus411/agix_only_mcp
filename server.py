@@ -50,7 +50,6 @@ with contextlib.redirect_stdout(sys.stderr):
     from agix.metacognition.dynamic_evaluator import DynamicMetaEvaluator
     from agix.metacognition.manager import MetacognitionManager
     from agix.metacognition.decision_reviewer import DecisionReviewer
-    from agix.metacognition.metareflection_engine import MetaReflectionEngine
     from agix.goals.goal_engine import GoalEngine
     from agix.emotion.emotion_simulator import EmotionSimulator, PADState
     from agix.qualia.qualia_core import EmotionalState
@@ -82,7 +81,8 @@ Herramientas de AGIX (framework de Adolfo González) para apoyar el razonamiento
   sí mismo y evaluación de si una acción encaja con esa identidad.
 - agix_decision_record / agix_decision_review / agix_metacognition_state: metacognición persistente;
   registra decisiones con su resultado y lección, revisa aciertos/errores y detecta errores repetidos.
-- agix_resolve_internal_conflict: delibera entre hipótesis, reforzando las respaldadas por la memoria.
+- agix_resolve_internal_conflict: delibera entre hipótesis según su peso y el resultado y el tono de
+  los episodios que las respaldan (un recuerdo de fracaso resta).
 - agix_identity_define / agix_identity_event: identidad sintética persistente (nombre, origen,
   atributos, rasgos, hitos). agix_identity_portrait: autorretrato que une identidad, Qualia,
   autonarrativa y metacognición.
@@ -1189,34 +1189,55 @@ def agix_metacognition_state(recent: int = 10) -> dict:
     })
 
 
+def _memory_evidence(memory: str | None) -> dict:
+    """Respaldo de la memoria episódica para una voz: episodios cuya situación, decisión o
+    resultado contienen `memory` (sin tildes ni mayúsculas), su balance de aciertos y su placer."""
+    q = _norm(memory or "").strip()
+    if not q:
+        return {"episodes": 0, "successes": 0, "failures": 0, "outcome": 0.0, "affect": 0.0}
+    eps = [e for e in _memory.experiencias
+           if q in _norm(" ".join(str(x) for x in (e.entrada, e.decision, e.resultado)))]
+    ok = sum(1 for e in eps if e.exito)
+    placer = [float((e.emocion or {}).get("placer", 0.0)) for e in eps
+              if isinstance(getattr(e, "emocion", None), dict)]
+    return {"episodes": len(eps), "successes": ok, "failures": len(eps) - ok,
+            "outcome": (2 * ok - len(eps)) / len(eps) if eps else 0.0,
+            "affect": sum(placer) / len(placer) if placer else 0.0}
+
+
 @server.tool()
-def agix_resolve_internal_conflict(
-    hypotheses: list[dict],
-    threshold: float = 0.5,
-    max_iterations: int = 10,
-) -> dict:
-    """Resuelve un conflicto entre voces internas (MetaReflectionEngine de AGIX).
+def agix_resolve_internal_conflict(hypotheses: list[dict], threshold: float = 0.1) -> dict:
+    """Delibera entre voces internas apoyándose en la memoria episódica.
 
     hypotheses: [{"text": str, "weight": 0..1, "memory": str opcional}, ...]
-    Cada iteración puntúa cada voz como peso + tono PAD (+0.1 si su "memory" aparece en el resumen
-    narrativo de la memoria episódica) y se detiene cuando la mejor supera a la segunda en
-    'threshold'. Las voces respaldadas por la memoria ganan fuerza en cada iteración.
+    "memory" se busca en los episodios registrados (situación, decisión, resultado). Cada voz puntúa
+        peso + 0.2·resultado + 0.1·tono
+    resultado = (aciertos − fallos) / episodios coincidentes ∈ [-1, 1]: un recuerdo de fracaso resta.
+    tono = placer medio registrado en esos episodios ∈ [-1, 1].
+    Sin episodios coincidentes la voz queda con su peso. resolved: la ventaja de la ganadora sobre
+    la segunda es al menos 'threshold'; si no, el conflicto sigue abierto (gana por poco).
     """
     if len(hypotheses) < 2:
         raise ValueError("Se necesitan al menos dos hipótesis")
-    engine = MetaReflectionEngine()
-    engine.memory = _memory.tree  # el respaldo de memoria se busca en la narrativa episódica real
-    voices = [engine.add_voice(h["text"], float(h.get("weight", 0.5)), h.get("memory")) for h in hypotheses]
-    with _quiet():
-        winner = engine.resolve_conflict(voices, threshold=threshold, max_iterations=max_iterations)
-    narrative = _memory.retrieve()
+    # Antes (MetaReflectionEngine): el tono PAD era el de un simulador nuevo (siempre 0) y común a
+    # todas las voces; el respaldo era "la cadena aparece en el resumen narrativo" (+0.1 aunque los
+    # episodios fueran fracasos) y se acumulaba en cada iteración hasta que la voz respaldada
+    # ganaba aunque partiera con mucho menos peso.
+    voices = []
+    for h in hypotheses:
+        ev = _memory_evidence(h.get("memory"))
+        weight = float(h.get("weight", 0.5))
+        voices.append({"text": h["text"], "weight": weight, "evidence": ev,
+                       "score": round(weight + 0.2 * ev["outcome"] + 0.1 * ev["affect"], 4)})
+    ranked = sorted(voices, key=lambda v: v["score"], reverse=True)
+    margin = round(ranked[0]["score"] - ranked[1]["score"], 4)
     return _plain({
-        "winner": winner.hipotesis,
-        "scores": {v.hipotesis: v.score for v in voices},
-        "memory_backed": [v.hipotesis for v in voices if v.memoria_asociada and v.memoria_asociada in narrative],
-        "iterations": len(engine.conflict_history),
-        "resolved": engine.conflict_history[-1]["difference"] > threshold,
-        "history": engine.conflict_history,
+        "winner": ranked[0]["text"],
+        "scores": {v["text"]: v["score"] for v in voices},
+        "evidence": {v["text"]: v["evidence"] for v in voices},
+        "memory_backed": [v["text"] for v in voices if v["evidence"]["episodes"]],
+        "margin": margin,
+        "resolved": margin >= threshold,
     })
 
 

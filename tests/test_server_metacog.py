@@ -105,17 +105,57 @@ def test_conflicto_gana_la_voz_respaldada_por_la_memoria(server):
     server.agix_memory_record("migración a pgvector", "migrar por lotes", "sin pérdida de datos", True)
     r = server.agix_resolve_internal_conflict([
         {"text": "reescribir todo de cero", "weight": 0.6},
-        {"text": "migrar por lotes como la otra vez", "weight": 0.55, "memory": "migración a pgvector"},
+        {"text": "migrar por lotes como la otra vez", "weight": 0.55, "memory": "MIGRACION a pgvector"},
     ])
     assert r["winner"] == "migrar por lotes como la otra vez"
     assert r["memory_backed"] == ["migrar por lotes como la otra vez"]
-    assert r["resolved"] and r["iterations"] > 1
+    assert r["evidence"]["migrar por lotes como la otra vez"]["successes"] == 1
+    assert r["scores"]["migrar por lotes como la otra vez"] == pytest.approx(0.75)
+    assert r["resolved"] and r["margin"] == pytest.approx(0.15)
+
+
+def test_conflicto_un_recuerdo_de_fracaso_resta(server):
+    server.agix_memory_record("despliegue del viernes", "desplegar sin margen", "hubo que revertir", False,
+                              emotion={"placer": -0.6, "activacion": 0.7, "dominancia": -0.2})
+    r = server.agix_resolve_internal_conflict([
+        {"text": "desplegar el viernes otra vez", "weight": 0.6, "memory": "despliegue del viernes"},
+        {"text": "esperar al lunes", "weight": 0.5},
+    ])
+    assert r["winner"] == "esperar al lunes"
+    assert r["scores"]["desplegar el viernes otra vez"] == pytest.approx(0.6 - 0.2 - 0.06)
+
+
+def test_conflicto_el_tono_de_la_memoria_desempata(server):
+    server.agix_memory_record("pair programming", "trabajar en pareja", "salió bien", True,
+                              emotion={"placer": 0.8, "activacion": 0.4, "dominancia": 0.3})
+    server.agix_memory_record("trabajo en solitario", "hacerlo solo", "salió bien", True,
+                              emotion={"placer": -0.4, "activacion": 0.6, "dominancia": 0.1})
+    r = server.agix_resolve_internal_conflict([
+        {"text": "en pareja", "weight": 0.5, "memory": "pair programming"},
+        {"text": "en solitario", "weight": 0.5, "memory": "trabajo en solitario"},
+    ])
+    assert r["winner"] == "en pareja"
+    assert r["margin"] == pytest.approx(0.12)
+
+
+def test_conflicto_el_respaldo_no_vence_una_preferencia_clara(server):
+    # Antes: +0.1 por iteración hasta que la voz respaldada ganaba aunque partiera de 0.2
+    server.agix_memory_record("regla de deny", "respetarla", "instalador entregado", True)
+    r = server.agix_resolve_internal_conflict([
+        {"text": "A", "weight": 0.6}, {"text": "B", "weight": 0.2, "memory": "regla de deny"}])
+    assert r["winner"] == "A"
+
+
+def test_conflicto_palabra_sin_episodios_no_respalda(server):
+    r = server.agix_resolve_internal_conflict([
+        {"text": "A", "weight": 0.5}, {"text": "B", "weight": 0.5, "memory": "nada parecido"}])
+    assert r["memory_backed"] == [] and r["margin"] == 0 and not r["resolved"]
 
 
 def test_conflicto_sin_respaldo_gana_el_mayor_peso(server):
     r = server.agix_resolve_internal_conflict([
         {"text": "A", "weight": 0.9}, {"text": "B", "weight": 0.2}])
-    assert r["winner"] == "A" and r["iterations"] == 1 and r["resolved"]
+    assert r["winner"] == "A" and r["resolved"]
 
 
 def test_conflicto_requiere_dos_hipotesis(server):

@@ -52,7 +52,7 @@ Datos persistentes en `%USERPROFILE%\.agix-mcp` (cambiable con `AGIX_MCP_DATA`):
 | `agix_metacognition_state` | `MetacognitionManager` + `SelfOrganizationMonitor` | Coherencia, auto-organización y componentes, proto-agencia |
 | `agix_identity_define` / `agix_identity_event` | `SyntheticIdentity` + `SelfModel` | Identidad persistente: nombre, origen, atributos, rasgos e hitos (opcionalmente a la autonarrativa) |
 | `agix_identity_portrait` | Todos | Autorretrato unificado: identidad + Qualia + autonarrativa + metacognición, con síntesis en texto |
-| `agix_resolve_internal_conflict` | `MetaReflectionEngine` | Deliberación entre hipótesis reforzando las respaldadas por la memoria episódica |
+| `agix_resolve_internal_conflict` | `EpisodicMemory` | Deliberación entre hipótesis: peso + resultado (aciertos − fallos) y placer de los episodios que respaldan cada una |
 | `agix_goal_register` | `GoalEngine` | Metas con filtro ético (< 0.6 se rechaza) |
 | `agix_emotion_update` | `EmotionSimulator` | Estado PAD puntual |
 | `agix_qualia_experience/state` | `QualiaSpirit` | Espíritu persistente: emociones, modo, predicción RNN, asociaciones hebbianas, diario, introspección |
