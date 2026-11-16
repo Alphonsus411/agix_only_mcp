@@ -122,6 +122,8 @@ def _plain(obj: Any) -> Any:
         return _plain({k: getattr(obj, k) for k in obj.__dataclass_fields__})
     if isinstance(obj, (str, int, bool)) or obj is None:
         return obj
+    if hasattr(obj, "isoformat"):  # datetime / date
+        return obj.isoformat()
     return str(obj)
 
 
@@ -133,6 +135,32 @@ def _quiet():
 
 # --------------------------------------------------------------------------- estado
 
+# Marcas de tiempo: todas en UTC con la zona explícita ("...+00:00"). AGIX mezclaba UTC sin zona
+# (episodios, decisiones) con hora local sin zona (sueños, metas): el mismo minuto real salía
+# como 08:05 en la memoria y 09:06 en los sueños.
+from datetime import datetime as _datetime, timezone as _timezone  # noqa: E402
+
+
+def _utc_now_iso() -> str:
+    return _datetime.now(_timezone.utc).isoformat()
+
+
+def _to_utc(value, naive_is_local: bool = False) -> _datetime:
+    """datetime o ISO → datetime en UTC. Sin zona: UTC (lo que AGIX guardaba en memoria y
+    decisiones) o, con naive_is_local, la hora local de esta máquina (sueños antiguos)."""
+    dt = value if isinstance(value, _datetime) else _datetime.fromisoformat(str(value))
+    if dt.tzinfo is None:
+        dt = dt.astimezone(_timezone.utc) if naive_is_local else dt.replace(tzinfo=_timezone.utc)
+    return dt.astimezone(_timezone.utc)
+
+
+def _to_utc_iso(value, naive_is_local: bool = False):
+    try:
+        return _to_utc(value, naive_is_local).isoformat()
+    except (TypeError, ValueError):
+        return value  # ilegible: se deja como estaba
+
+
 # Memoria episódica: registro completo (GestorDeMemoria, memoria.json) + árbol narrativo resumido.
 _memory = EpisodicMemory()
 if Path(MEMORY_FILE).exists():
@@ -141,6 +169,9 @@ if Path(MEMORY_FILE).exists():
             _memory.cargar(MEMORY_FILE)
     except Exception as exc:  # memoria corrupta: no bloquear el servidor
         log.warning("No se pudo cargar la memoria: %s", exc)
+for _e in _memory.experiencias:  # episodios antiguos: UTC sin zona → UTC explícito
+    if _e.timestamp:
+        _e.timestamp = _to_utc_iso(_e.timestamp)
 
 
 def _episode_fragment(e) -> str:
@@ -378,6 +409,14 @@ _aesthetic_core = QualiaSpiritCore()
 _dreams = DreamBank()
 try:
     _dreams.importar(DREAMS_FILE)
+    # DreamBank guardaba la hora local sin zona: se convierte a UTC explícito y se persiste
+    _migrated = False
+    for _s in _dreams.suenos:
+        _new = _to_utc_iso(_s.get("timestamp"), naive_is_local=True)
+        if _new != _s.get("timestamp"):
+            _s["timestamp"], _migrated = _new, True
+    if _migrated:
+        _dreams.exportar(DREAMS_FILE)
 except Exception as exc:
     log.warning("No se pudo cargar el banco de sueños: %s", exc)
 _loop: SyntheticLoop | None = None
@@ -669,7 +708,8 @@ def agix_memory_record(
     """
     with _quiet():
         exp = _memory.store_episode(situation, decision, outcome, success,
-                                    juicio_etico=ethical_judgment, emocion=emotion)
+                                    juicio_etico=ethical_judgment, timestamp=_utc_now_iso(),
+                                    emocion=emotion)
         _memory.guardar(MEMORY_FILE)
     return {"stored": _exp_dict(exp), "total": len(_memory.experiencias)}
 
@@ -728,10 +768,11 @@ def agix_memory_recent(n: int = 10) -> dict:
 
 
 def _parse_when(value: str, end: bool = False):
-    """Acepta 'YYYY-MM-DD' o ISO completo. Una fecha sola como fin abarca todo ese día."""
-    from datetime import datetime, timedelta
+    """Acepta 'YYYY-MM-DD' o ISO completo (sin zona = UTC). Una fecha sola como fin abarca todo
+    ese día."""
+    from datetime import timedelta
 
-    dt = datetime.fromisoformat(value)
+    dt = _to_utc(value)
     if end and len(value) == 10:
         dt = dt + timedelta(days=1) - timedelta(microseconds=1)
     return dt
@@ -742,17 +783,16 @@ def agix_memory_timeline(start: str, end: str | None = None, n: int = 50,
                          only_success: bool | None = None) -> dict:
     """Episodios entre dos fechas en orden cronológico (memoria episódica).
 
-    start / end: 'YYYY-MM-DD' o ISO 'YYYY-MM-DDTHH:MM:SS'. Las marcas de tiempo están en UTC.
+    start / end: 'YYYY-MM-DD' o ISO 'YYYY-MM-DDTHH:MM:SS[+HH:MM]'; sin zona se entienden en UTC,
+        que es la zona de todas las marcas de tiempo.
     Devuelve como mucho los n episodios más recientes del intervalo y el balance de aciertos.
     """
-    from datetime import datetime
-
     lo = _parse_when(start)
-    hi = _parse_when(end, end=True) if end else datetime.max
+    hi = _parse_when(end, end=True) if end else _datetime.max.replace(tzinfo=_timezone.utc)
     events = []
     for e in _memory.experiencias:
         try:
-            ts = datetime.fromisoformat(e.timestamp)
+            ts = _to_utc(e.timestamp)
         except (TypeError, ValueError):
             continue
         if lo <= ts <= hi and (only_success is None or e.exito == only_success):
@@ -1061,6 +1101,9 @@ def _load_metacog() -> None:
         return
     data = json.loads(METACOG_FILE.read_text(encoding="utf-8"))
     _metacog.logic.registro_reflexivo = list(data.get("decisions", []))
+    for ev in _metacog.logic.registro_reflexivo:  # decisiones antiguas: UTC sin zona → explícito
+        if isinstance(ev, dict) and ev.get("timestamp"):
+            ev["timestamp"] = _to_utc_iso(ev["timestamp"])
     so = _metacog.self_organization
     so.active_modules = list(data.get("active_modules", []))
     so.dependencies = dict(data.get("dependencies", {}))
@@ -1077,10 +1120,8 @@ except Exception as exc:
 
 
 def _stamp_last_decision() -> dict:
-    from datetime import datetime
-
     event = _metacog.logic.registro_reflexivo[-1]
-    event.setdefault("timestamp", datetime.utcnow().isoformat())
+    event.setdefault("timestamp", _utc_now_iso())
     return event
 
 
@@ -1274,6 +1315,8 @@ def agix_goal_register(description: str, impact: dict[str, float], priority: int
     try:
         with _quiet():
             g = _goals.agregar_meta(description, prioridad=priority, impacto=impact)
+        if getattr(g, "timestamp_creacion", None) is not None:  # GoalEngine usa la hora local
+            g.timestamp_creacion = _to_utc(g.timestamp_creacion, naive_is_local=True)
         accepted, goal, reason = True, _plain(getattr(g, "__dict__", g)), None
     except ValueError as exc:
         accepted, goal, reason = False, None, str(exc)
@@ -1510,6 +1553,7 @@ def agix_aesthetic_decide(options: list[dict]) -> dict:
 def agix_dream_record(content: str, emotion: str, intensity: float) -> dict:
     """Guarda un sueño, visión o recuerdo simbólico en el DreamBank persistente (suenos.json)."""
     _dreams.registrar_sueno(content, emotion, float(intensity))
+    _dreams.suenos[-1]["timestamp"] = _utc_now_iso()  # DreamBank usa la hora local sin zona
     _dreams.exportar(DREAMS_FILE)
     return {"stored": _dreams.suenos[-1], "total": len(_dreams.suenos)}
 

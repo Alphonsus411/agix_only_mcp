@@ -94,6 +94,14 @@ Tests: `.venv\Scripts\python -m pytest tests -q`.
   4/5 aciertos), con "ambivalencia" si empatan; las lecciones usan la registrada en vez de un
   "Mejorar acción ..." genérico.
 
+## Marcas de tiempo
+
+Todas en UTC con la zona explícita (`2026-11-16T08:05:48+00:00`): episodios, decisiones, sueños y
+metas. AGIX guarda UTC sin zona en la memoria y hora local sin zona en `DreamBank` y `GoalEngine`;
+el servidor fija la hora él mismo y, al arrancar, lee los episodios y decisiones antiguos sin zona
+como UTC y convierte a UTC los sueños antiguos (hora local de esta máquina), persistiéndolos.
+`agix_memory_timeline` acepta fechas sin zona (UTC) o con ella.
+
 ## Notas sobre AGIX 1.11.0 detectadas al integrarlo
 
 - `agix razonar` solo deriva un hecho por llamada (no alcanza el cierre); por eso `agix_logic_infer` usa su propio bucle.

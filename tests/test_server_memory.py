@@ -1,11 +1,11 @@
 """Tests de memoria episódica (línea temporal, narrativa) y autonarrativa del servidor MCP."""
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-HOY = datetime.utcnow().date().isoformat()  # los timestamps de AGIX están en UTC
-MANANA = (datetime.utcnow().date() + timedelta(days=1)).isoformat()
+HOY = datetime.now(timezone.utc).date().isoformat()  # las marcas de tiempo están en UTC
+MANANA = (datetime.now(timezone.utc).date() + timedelta(days=1)).isoformat()
 
 
 # --------------------------------------------------------------- memoria episódica
