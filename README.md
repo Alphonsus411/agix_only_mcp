@@ -44,7 +44,7 @@ Datos persistentes en `%USERPROFILE%\.agix-mcp` (cambiable con `AGIX_MCP_DATA`):
 | `agix_narrative_store/query` | `AutonarrativeCore` | Autonarrativa en SQLite con valores, metas y afectos; búsqueda top-k puntuada |
 | `agix_narrative_self` / `agix_narrative_evaluate_action` | `AutonarrativeCore.SelfModel` | Modelo de sí mismo y encaje (léxico) de una acción con esa identidad; evaluar no cambia nada, `commit=true` aplica el efecto de AGIX en planificación/motivación |
 | `agix_ontology_add/query` | `memory.symbolic.Ontology` | Grafo persistente, cierre transitivo de relaciones y herencia de atributos |
-| `agix_ethics_judge` | `AlignmentInterface` + marcos | Eco, utilitarista, deontológico, virtudes |
+| `agix_ethics_judge` | `AlignmentInterface` + marcos | Eco, utilitarista, deontológico, virtudes; el riesgo cuenta como coste; avisos de claves y rangos |
 | `agix_intention_evaluate` | `IntentionEvaluator` | Consecuencias, conflicto de metas, conducta |
 | `agix_meta_evaluate` | `DynamicMetaEvaluator` | Coherencia, ética, tono afectivo (historial persistente compartido) |
 | `agix_decision_record` | `MetacognitionManager` | Decisión + resultado + lección + meta + módulos implicados |
@@ -91,6 +91,12 @@ Tests: `.venv\Scripts\python -m pytest tests -q`.
 - `qualia/spirit.py`: el diario guarda la carga recibida, no la ya modulada por la plasticidad (0.7 → 0.6749).
 - `qualia/spirit.py`: la RNN aprende el cambio entre estados y predice actual + cambio (antes predecía
   valores absolutos que se quedaban en ~0.00–0.04); `predecir_futuro` ya no altera el estado oculto.
+- `qualia/ecoethics.py` (política moral por defecto del ciclo, las metas y la metacognición): veto
+  por daño (si `no_dano` < 0.3 la puntuación no supera `no_dano`; antes `{pro_vida 1, no_dano 0,
+  respeto 1}` daba 0.7 "aceptable"), el riesgo penaliza (× 1 − 0.5·risk; antes se ignoraba),
+  valores recortados a [0, 1] (antes `pro_vida 2` daba "justo"), claves sin tildes (`no_daño`) y
+  `diagnosticar()` con avisos. `ethics/frameworks.py` + `ecoethics.py`: límites de las etiquetas
+  inclusivos (0.6 es "aceptable", como el umbral de decisión; antes "cuestionable" pero aceptada).
 - `metacognition/decision_reviewer.py`: el tono de la revisión es proporcional a aciertos y errores
   (antes ambas emociones acababan en 0.7 y el empate lo ganaba la primera decisión: "frustracion" con
   4/5 aciertos), con "ambivalencia" si empatan; las lecciones usan la registrada en vez de un

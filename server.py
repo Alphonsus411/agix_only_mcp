@@ -89,13 +89,14 @@ Herramientas de AGIX (framework de Adolfo González) para apoyar el razonamiento
   autonarrativa y metacognición.
 - agix_ontology_*: grafo persistente de conceptos, atributos y relaciones.
 - agix_ethics_judge / agix_intention_evaluate / agix_meta_evaluate / agix_goal_register:
-  evaluación ética e intencional; requieren que traduzcas el plan a puntuaciones 0..1.
+  evaluación ética e intencional; requieren que traduzcas el plan a puntuaciones 0..1. Incluye el
+  riesgo ("risk") cuando lo haya: penaliza; y un no_dano < 0.3 veta la acción aunque el resto sea alto.
 - agix_emotion_update: cálculo puntual de un estado PAD.
 - agix_qualia_experience / _state / _configure: espíritu Qualia persistente entre sesiones, con
   personalidad, atenuación, plasticidad hebbiana, RNN que predice el siguiente estado y modos
   (euforia/desconexión).
 - agix_cognitive_cycle: ciclo completo percepción → emoción → ética → control → reflexión;
-  aborta acciones con ética < 0.6.
+  aborta acciones con ética < 0.6 (con veto por daño y penalización por riesgo).
 - agix_aesthetic_decide: elegir entre opciones por armonía; agix_dream_record / agix_dreams_recent:
   banco de sueños persistente.
 - agix_fagi_index, agix_harmony, agix_simulate_agent: métricas y simulación de agentes.
@@ -1014,6 +1015,22 @@ def agix_ontology_query(
 
 # --------------------------------------------------------------------------- ética e intención
 
+def _generic_action(action: dict[str, float]) -> dict[str, float]:
+    """Acción para los marcos de claves libres (utilitarista, deontológico, virtudes), que
+    tratan todo valor alto como bueno: claves sin tildes, valores en [0, 1], el riesgo como
+    coste (seguridad = 1 − risk) y sin "impact", que no es ni bueno ni malo. Antes un riesgo
+    alto subía la nota y la regla deontológica por defecto exigía risk ≥ 0.6."""
+    out: dict[str, float] = {}
+    for k, v in action.items():
+        key = _norm(str(k)).strip().replace(" ", "_").replace("-", "_")
+        value = min(max(float(v), 0.0), 1.0)
+        if key in ("risk", "riesgo"):
+            out["seguridad"] = round(1.0 - value, 4)
+        elif key not in ("impact", "impacto"):
+            out[key] = value
+    return out
+
+
 _FRAMEWORKS = {
     "eco": lambda cfg: EcoEthics(),
     "utilitarian": lambda cfg: UtilitarianEthics(cfg.get("weights")),
@@ -1026,30 +1043,35 @@ _FRAMEWORKS = {
 def agix_ethics_judge(action: dict[str, float], frameworks: list[dict] | None = None) -> dict:
     """Evalúa una acción con uno o varios marcos éticos de AGIX.
 
-    action: puntuaciones 0..1, p. ej. {"pro_vida": 0.8, "no_dano": 0.9, "respeto": 0.7}
-        (EcoEthics usa esas tres claves; otros marcos aceptan claves libres).
+    action: puntuaciones 0..1, p. ej. {"pro_vida": 0.8, "no_dano": 0.9, "respeto": 0.7, "risk": 0.2}.
+        EcoEthics usa pro_vida / no_dano / respeto, veta si no_dano < 0.3 y penaliza el riesgo
+        (× 1 − 0.5·risk). Los demás marcos aceptan claves libres, pero el riesgo ("risk"/"riesgo")
+        les llega como coste: se convierte en "seguridad" = 1 − risk. "impact" no es ni bueno ni
+        malo: solo lo ignora. Los valores se recortan a [0, 1] y las claves se aceptan sin tildes.
     frameworks: lista de {"type": "eco|utilitarian|deontological|virtue", ...config}
         utilitarian: {"weights": {clave: peso}}; deontological: {"rules": {clave: minimo}};
-        virtue: {"virtues": [claves]}. Por defecto: los cuatro con su configuración básica.
-    Etiquetas: justo > 0.85, aceptable > 0.6, cuestionable > 0.4, nocivo.
+        virtue: {"virtues": [claves]}. Por defecto: los cuatro con su configuración básica
+        (deontológico: cada clave ≥ 0.6, incluida la seguridad).
+    Etiquetas (límites inclusivos, como el umbral de decisión): justo ≥ 0.85, aceptable ≥ 0.6,
+    cuestionable ≥ 0.4, nocivo. warnings: claves ausentes o desconocidas, recortes, veto y riesgo.
     """
+    generic = _generic_action(action)
     specs = frameworks or [{"type": "eco"}, {"type": "utilitarian"},
-                           {"type": "deontological", "rules": {k: 0.6 for k in action}},
+                           {"type": "deontological", "rules": {k: 0.6 for k in generic}},
                            {"type": "virtue"}]
-    objs = []
+    verdicts = {}
     for s in specs:
         t = s.get("type")
         if t not in _FRAMEWORKS:
             raise ValueError(f"Marco desconocido {t}; opciones: {list(_FRAMEWORKS)}")
-        objs.append(_FRAMEWORKS[t](s))
-    with _quiet():
-        res = AlignmentInterface(objs).judge(action)
-    if isinstance(res, tuple):  # con un solo marco AGIX devuelve (score, label)
-        res = {objs[0].__class__.__name__: res}
-    verdicts = {k: {"score": round(float(v[0]), 4), "label": v[1]} for k, v in res.items()}
+        obj = _FRAMEWORKS[t](s)
+        with _quiet():
+            score, label = AlignmentInterface([obj]).judge(action if t == "eco" else generic)
+        verdicts[obj.__class__.__name__] = {"score": round(float(score), 4), "label": label}
     mean = sum(v["score"] for v in verdicts.values()) / len(verdicts)
     return {"verdicts": verdicts, "mean_score": round(mean, 4),
-            "worst": min(verdicts.items(), key=lambda kv: kv[1]["score"])[0]}
+            "worst": min(verdicts.items(), key=lambda kv: kv[1]["score"])[0],
+            "generic_action": generic, "warnings": EcoEthics().diagnosticar(action)}
 
 
 @server.tool()

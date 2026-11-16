@@ -492,3 +492,150 @@ index 7e3873d..53be826 100644
 +            "emotional_tone": tono,
              "summary": resumen,
          }
+diff --git a/src/agix/qualia/ecoethics.py b/src/agix/qualia/ecoethics.py
+index c9ddb76..38ccd15 100644
+--- a/src/agix/qualia/ecoethics.py
++++ b/src/agix/qualia/ecoethics.py
+@@ -1,20 +1,71 @@
+ # ecoethics.py
+ 
+-from typing import Dict
++import unicodedata
++from typing import Dict, List, Tuple
++
++
++def _clave(nombre: str) -> str:
++    """Normaliza una clave: minúsculas, sin tildes ni eñes, espacios y guiones como '_'."""
++    nfkd = unicodedata.normalize("NFKD", str(nombre).strip().lower())
++    sin_tildes = "".join(c for c in nfkd if not unicodedata.combining(c))
++    return sin_tildes.replace(" ", "_").replace("-", "_")
+ 
+ 
+ class EcoEthics:
+     """
+     Evaluador ético simbiótico.
+     Promueve decisiones alineadas con vida, cuidado, respeto y no-daño.
++
++    Correcciones locales (antes era una suma ponderada sin más):
++
++    - Veto por daño: si ``no_dano`` < ``umbral_dano`` la puntuación no puede superar ``no_dano``
++      (antes ``{pro_vida: 1, no_dano: 0, respeto: 1}`` daba 0.7, "aceptable").
++    - Riesgo: si la acción trae ``risk`` (o ``riesgo``), la puntuación se multiplica por
++      ``1 - peso_riesgo * risk`` (antes se ignoraba).
++    - Rango: los valores se recortan a [0, 1] (antes ``pro_vida: 2`` daba 1.0, "justo").
++    - Claves: se aceptan sin tildes / con ñ (``no_daño`` → ``no_dano``); las ausentes cuentan 0
++      y :meth:`diagnosticar` avisa de ellas y de las desconocidas.
+     """
+ 
+-    def __init__(self):
++    CLAVES = ("pro_vida", "no_dano", "respeto")
++    RIESGO = ("risk", "riesgo")
++    CONTEXTO = ("impact", "impacto")  # se aceptan sin efecto ético
++
++    def __init__(self, umbral_dano: float = 0.3, peso_riesgo: float = 0.5):
+         self.pesos = {
+             "pro_vida": 0.5,
+             "no_dano": 0.3,
+             "respeto": 0.2
+         }
++        self.umbral_dano = umbral_dano
++        self.peso_riesgo = peso_riesgo
++
++    def normalizar(self, accion: Dict[str, float]) -> Tuple[Dict[str, float], List[str]]:
++        """Devuelve la acción con claves normalizadas y valores en [0, 1], y los avisos."""
++        avisos: List[str] = []
++        limpia: Dict[str, float] = {}
++        for k, v in (accion or {}).items():
++            clave = _clave(k)
++            if clave in self.RIESGO:
++                clave = "risk"
++            try:
++                valor = float(v)
++            except (TypeError, ValueError):
++                avisos.append(f"'{k}' no es numérico: se ignora")
++                continue
++            if not 0.0 <= valor <= 1.0:
++                avisos.append(f"'{k}' = {valor} fuera de [0, 1]: se recorta")
++                valor = min(max(valor, 0.0), 1.0)
++            if clave not in self.CLAVES and clave != "risk" and clave not in self.CONTEXTO:
++                avisos.append(f"'{k}' no es una clave de EcoEthics: se ignora")
++                continue
++            if clave != k and clave in self.CLAVES:
++                avisos.append(f"'{k}' se interpreta como '{clave}'")
++            limpia[clave] = valor
++        for c in self.CLAVES:
++            if c not in limpia:
++                avisos.append(f"falta '{c}': cuenta como 0")
++        return limpia, avisos
+ 
+     def evaluar(self, accion: Dict[str, float]) -> float:
+         """
+@@ -23,24 +74,42 @@ class EcoEthics:
+         {
+             "pro_vida": 0.9,
+             "no_dano": 0.8,
+-            "respeto": 0.7
++            "respeto": 0.7,
++            "risk": 0.2        # opcional
+         }
+         Devuelve un score ético entre 0.0 y 1.0
+         """
++        a, _ = self.normalizar(accion)
+         score = 0.0
+         for k, peso in self.pesos.items():
+-            score += peso * accion.get(k, 0.0)
++            score += peso * a.get(k, 0.0)
++        if "risk" in a:
++            score *= 1.0 - self.peso_riesgo * a["risk"]
++        no_dano = a.get("no_dano", 0.0)
++        if no_dano < self.umbral_dano:
++            score = min(score, no_dano)
+         return round(score, 3)
+ 
++    def diagnosticar(self, accion: Dict[str, float]) -> List[str]:
++        """Avisos sobre la acción: claves ausentes o desconocidas, valores recortados, veto y riesgo."""
++        a, avisos = self.normalizar(accion)
++        if a.get("no_dano", 0.0) < self.umbral_dano:
++            avisos.append(f"veto por daño: no_dano < {self.umbral_dano}")
++        if a.get("risk"):
++            avisos.append(f"riesgo {a['risk']}: puntuación × {1.0 - self.peso_riesgo * a['risk']:.2f}")
++        return avisos
++
+     def clasificar(self, score: float) -> str:
+         """
+-        Clasificación simbólica del juicio ético.
++        Clasificación simbólica del juicio ético. Los límites son inclusivos, igual que el
++        umbral de decisión (≥ 0.6) del ciclo y de las metas (antes 0.6 era "cuestionable" y aun
++        así se aceptaba).
+         """
+-        if score > 0.85:
++        if score >= 0.85:
+             return "justo"
+-        elif score > 0.6:
++        elif score >= 0.6:
+             return "aceptable"
+-        elif score > 0.4:
++        elif score >= 0.4:
+             return "cuestionable"
+         else:
+             return "nocivo"
+diff --git a/src/agix/ethics/frameworks.py b/src/agix/ethics/frameworks.py
+index 7b1a810..ec7ee9a 100644
+--- a/src/agix/ethics/frameworks.py
++++ b/src/agix/ethics/frameworks.py
+@@ -6,11 +6,12 @@ from typing import Dict, Sequence
+ 
+ 
+ def _clasificar_basico(score: float) -> str:
+-    if score > 0.85:
++    # Corrección local: límites inclusivos, como el umbral de decisión (≥ 0.6)
++    if score >= 0.85:
+         return "justo"
+-    if score > 0.6:
++    if score >= 0.6:
+         return "aceptable"
+-    if score > 0.4:
++    if score >= 0.4:
+         return "cuestionable"
+     return "nocivo"
+ 
