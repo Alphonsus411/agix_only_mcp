@@ -136,6 +136,62 @@ def test_atenuacion_no_afecta_a_una_experiencia_aislada():
     assert sp.estado_emocional.emociones["curiosidad"] == pytest.approx(0.6)
 
 
+# --------------------------------------------------------------- acumulación
+
+
+@pytest.mark.parametrize("previa,carga", [(0.39, 0.3), (0.44, 0.4), (0.9, 0.05), (0.5, 0.0)])
+def test_sentir_nunca_reduce_la_emocion_sentida(previa, carga):
+    from agix.qualia.qualia_core import EmotionalState
+
+    est = EmotionalState()
+    est.emociones = {"miedo": previa}
+    est.sentir("miedo", carga)
+    assert previa <= est.emociones["miedo"] <= 1.0
+
+
+def test_sentir_mas_intenso_promedia_como_el_original():
+    from agix.qualia.qualia_core import EmotionalState
+
+    est = EmotionalState()
+    est.sentir("alegría", 0.4)
+    est.sentir("alegría", 0.8)
+    assert est.emociones["alegría"] == pytest.approx(0.6)
+
+
+def test_experiencia_de_miedo_suave_no_baja_el_miedo():
+    # Caso real observado: miedo 0.39 → 0.32 tras una experiencia de miedo 0.3
+    sp = QualiaSpirit("X")
+    sp.experimentar("susto", 0.6, "miedo")
+    antes = sp.estado_emocional.emociones["miedo"]
+    sp.experimentar("inquietud leve", 0.3, "miedo")
+    assert sp.estado_emocional.emociones["miedo"] >= antes
+
+
+def test_dia_real_con_plasticidad_ninguna_experiencia_baja_su_emocion():
+    # Secuencia real del 2026-11-16 con la configuración del MCP
+    eventos = [("eje", 0.9, "curiosidad"), ("plasticidad", 0.6, "miedo"),
+               ("tests", 0.85, "alegría"), ("regla", 0.4, "sorpresa"),
+               ("loop", 0.5, "sorpresa"), ("40 tools", 0.7, "alegría"),
+               ("neinver", 0.3, "miedo"), ("modos", 0.6, "curiosidad"),
+               ("disco", 0.4, "alegría")]
+    sp = QualiaSpirit("X", plasticidad=True, atenuacion=0.9)
+    with contextlib.redirect_stdout(io.StringIO()):
+        for ev in eventos:
+            antes = sp.estado_emocional.emociones.get(ev[2], 0.0)
+            sp.experimentar(*ev)
+            assert sp.estado_emocional.emociones[ev[2]] >= antes, ev
+
+
+def test_la_emocion_sentida_no_se_atenua_pero_las_demas_si():
+    sp = QualiaSpirit("X")
+    sp.experimentar("a", 0.6, "miedo")
+    sp.experimentar("b", 0.8, "alegría")
+    alegria, miedo = (sp.estado_emocional.emociones[k] for k in ("alegría", "miedo"))
+    sp.experimentar("c", 0.2, "miedo")
+    assert sp.estado_emocional.emociones["miedo"] == pytest.approx(miedo)
+    assert sp.estado_emocional.emociones["alegría"] == pytest.approx(alegria * sp.atenuacion)
+
+
 # --------------------------------------------------------------- RNN
 
 
