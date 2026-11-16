@@ -127,6 +127,23 @@ def test_hook_lee_solo_la_memoria_del_proyecto(tmp_path):
     assert "secreto global" in _hook("session", other, env)
 
 
+def test_hook_redacta_credenciales_en_contexto(tmp_path):
+    env = _env(tmp_path)
+    project = _project(tmp_path, "cliente-x")
+    folder = tmp_path / "home" / "proyectos" / "cliente-x"
+    folder.mkdir(parents=True)
+    secret = "ghp_" + "a" * 36
+    data = {"decisions": [{"accion": "deploy", "resultado": {
+        "exito": False, "leccion": "Authorization: Bearer token123 password=secreto " + secret
+    }, "contexto": {"goal": "deploy"}}]}
+    (folder / "metacognicion.json").write_text(json.dumps(data), encoding="utf-8")
+    result = _hook("session", project, env)
+    assert "[REDACTED]" in result
+    assert "token123" not in result
+    assert "secreto" not in result
+    assert secret not in result
+
+
 def test_hook_con_memoria_desactivada_no_lee_nada(tmp_path):
     env = _env(tmp_path)
     _decisions(tmp_path / "home", "secreto global desplegar")
