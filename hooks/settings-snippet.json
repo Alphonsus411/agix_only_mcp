@@ -5,8 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "C:/Users/adolfo.gonzalez.MARKETING/PycharmProjects/agix-mcp/.venv/Scripts/python.exe",
-            "args": ["C:/Users/adolfo.gonzalez.MARKETING/PycharmProjects/agix-mcp/hooks/agix_context.py", "session"],
+            "command": "\"C:/Users/adolfo.gonzalez.MARKETING/PycharmProjects/agix-mcp/.venv/Scripts/python.exe\" \"C:/Users/adolfo.gonzalez.MARKETING/PycharmProjects/agix-mcp/hooks/agix_context.py\" session",
             "timeout": 10
           }
         ]
@@ -17,8 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "C:/Users/adolfo.gonzalez.MARKETING/PycharmProjects/agix-mcp/.venv/Scripts/python.exe",
-            "args": ["C:/Users/adolfo.gonzalez.MARKETING/PycharmProjects/agix-mcp/hooks/agix_context.py", "prompt"],
+            "command": "\"C:/Users/adolfo.gonzalez.MARKETING/PycharmProjects/agix-mcp/.venv/Scripts/python.exe\" \"C:/Users/adolfo.gonzalez.MARKETING/PycharmProjects/agix-mcp/hooks/agix_context.py\" prompt",
             "timeout": 10
           }
         ]

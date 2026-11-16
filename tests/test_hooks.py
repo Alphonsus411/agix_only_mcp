@@ -67,3 +67,43 @@ def test_entrada_rota_no_bloquea():
     proc = subprocess.run([sys.executable, str(SCRIPT), "prompt"], input="esto no es json",
                           capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0
+
+
+def _installer():
+    sys.path.insert(0, str(SCRIPT.parent))
+    try:
+        import install_hooks
+    finally:
+        sys.path.pop(0)
+    return install_hooks
+
+
+def test_instalador_usa_una_sola_cadena_ejecutable():
+    """Claude Code no tiene campo "args": el script y el modo deben ir dentro de "command"."""
+    hooks = _installer().agix_hooks()
+    for event, mode in (("SessionStart", "session"), ("UserPromptSubmit", "prompt")):
+        hook = hooks[event]["hooks"][0]
+        assert "args" not in hook
+        assert "agix_context.py" in hook["command"] and hook["command"].endswith(f" {mode}")
+        # La cadena se ejecuta tal cual en un shell y lanza el script (sin datos no imprime nada).
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(os.environ, AGIX_MCP_DATA=tmp)
+            proc = subprocess.run(hook["command"], shell=True, input="{}", capture_output=True,
+                                  text=True, encoding="utf-8", env=env, timeout=30)
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip() == ""
+
+
+def test_instalador_sustituye_el_formato_antiguo_y_conserva_lo_demas():
+    inst = _installer()
+    antiguo = {"type": "command", "command": "python.exe", "args": ["x/agix_context.py", "session"]}
+    ajeno = {"hooks": [{"type": "command", "command": "otro.exe"}]}
+    settings = {"theme": "dark", "permissions": {"deny": ["Edit(x)"]},
+                "hooks": {"SessionStart": [ajeno, {"hooks": [antiguo]}]}}
+    merged = inst.merge(json.loads(json.dumps(settings)))
+    assert merged["theme"] == "dark" and merged["permissions"] == {"deny": ["Edit(x)"]}
+    session = merged["hooks"]["SessionStart"]
+    assert session[0] == ajeno and len(session) == 2 and "args" not in session[1]["hooks"][0]
+    assert inst.merge(json.loads(json.dumps(merged))) == merged  # idempotente
+    limpio = inst.merge(merged, uninstall=True)
+    assert limpio["hooks"] == {"SessionStart": [ajeno]}

@@ -28,13 +28,16 @@ def agix_hooks() -> dict:
     script = REPO / "hooks" / "agix_context.py"
 
     def entry(mode: str) -> dict:
-        return {"hooks": [{"type": "command", "command": python.as_posix(),
-                           "args": [script.as_posix(), mode], "timeout": 10}]}
+        # Claude Code solo admite una cadena en "command" (no hay campo "args"): todo va en ella,
+        # con las rutas entre comillas por si contienen espacios.
+        command = f'"{python.as_posix()}" "{script.as_posix()}" {mode}'
+        return {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
 
     return {"SessionStart": entry("session"), "UserPromptSubmit": entry("prompt")}
 
 
 def _is_agix(group: dict) -> bool:
+    # También reconoce el formato antiguo con "args", para sustituirlo al reinstalar.
     return any(MARKER in " ".join([h.get("command", "")] + list(h.get("args", [])))
                for h in group.get("hooks", []))
 
