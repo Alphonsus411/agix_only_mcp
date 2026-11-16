@@ -182,6 +182,17 @@ def test_dia_real_con_plasticidad_ninguna_experiencia_baja_su_emocion():
             assert sp.estado_emocional.emociones[ev[2]] >= antes, ev
 
 
+def test_el_diario_guarda_la_carga_enviada_aunque_haya_plasticidad():
+    eventos = [("eje", 0.9, "curiosidad"), ("tests", 0.85, "alegría"),
+               ("40 tools", 0.7, "alegría"), ("neinver", 0.3, "miedo"),
+               ("disco", 0.4, "alegría")]
+    sp = QualiaSpirit("X", plasticidad=True)
+    with contextlib.redirect_stdout(io.StringIO()):
+        for ev in eventos:
+            sp.experimentar(*ev)
+    assert sp.diario() == [(e, emocion, c) for e, c, emocion in eventos]
+
+
 def test_la_emocion_sentida_no_se_atenua_pero_las_demas_si():
     sp = QualiaSpirit("X")
     sp.experimentar("a", 0.6, "miedo")
