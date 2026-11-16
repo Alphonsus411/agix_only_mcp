@@ -1,0 +1,20 @@
+# Entorno virtual (contiene la copia de agix con las correcciones locales; se reconstruye con requirements + patches)
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Datos del servidor (por defecto viven en ~/.agix-mcp, por si se apunta AGIX_MCP_DATA aquí)
+memoria.json
+ontologia.json
+.agix-mcp/
+
+# Editores / SO
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store

@@ -1,0 +1,61 @@
+# agix-mcp
+
+Servidor MCP (stdio) que expone [AGIX](https://pypi.org/project/agix/) como herramientas para Claude.
+
+## Instalación
+
+```bash
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+claude mcp add --scope user agix -e PYTHONIOENCODING=utf-8 -- "%CD%\.venv\Scripts\python.exe" "%CD%\server.py"
+```
+
+Datos persistentes en `%USERPROFILE%\.agix-mcp` (cambiable con `AGIX_MCP_DATA`):
+`memoria.json` (experiencias) y `ontologia.json` (conceptos).
+
+## Herramientas
+
+| Herramienta | Base en AGIX | Uso |
+|---|---|---|
+| `agix_logic_infer` | `Fact` + motor propio | Encadenamiento hacia delante hasta punto fijo, variables, negación por fallo, `transitive`/`symmetric`, `query`, traza de derivación |
+| `agix_verify_expression` | `evaluation.formal.verifier` | sat/unsat en dominio {-1,0,1} |
+| `agix_fuzzy_infer` | scikit-fuzzy | Mamdani con términos bajo/medio/alto |
+| `agix_nash_equilibria` | nashpy | Equilibrios de Nash de cualquier juego bimatricial |
+| `agix_memory_record/search/recent` | `GestorDeMemoria` | Memoria persistente de experiencias (búsqueda por palabras clave + similitud) |
+| `agix_ontology_add/query` | `memory.symbolic.Ontology` | Grafo persistente, cierre transitivo de relaciones y herencia de atributos |
+| `agix_ethics_judge` | `AlignmentInterface` + marcos | Eco, utilitarista, deontológico, virtudes |
+| `agix_intention_evaluate` | `IntentionEvaluator` | Consecuencias, conflicto de metas, conducta |
+| `agix_meta_evaluate` | `DynamicMetaEvaluator` | Coherencia, ética, tono afectivo (estado de sesión) |
+| `agix_goal_register` | `GoalEngine` | Metas con filtro ético (< 0.6 se rechaza) |
+| `agix_emotion_update` | `EmotionSimulator` | Estado PAD |
+| `agix_qualia_experience/state` | `QualiaSpirit` | Experiencias, reflexión y diario |
+| `agix_fagi_index`, `agix_harmony`, `agix_simulate_agent` | `evaluation`, `AutoAgent` | Métricas y simulación |
+
+## Correcciones locales de AGIX (solo en este `.venv`)
+
+La copia de agix instalada en `.venv` lleva correcciones que **no están en el repositorio de AGIX**.
+Un `pip install --force-reinstall agix` las borraría; para reaplicarlas, usa `patches/qualia-fixes.patch`
+(rutas `src/agix/...`, pensado para aplicarse en agi_core). Originales en `patches/orig/`.
+Tests: `.venv\Scripts\python -m pytest tests -q`.
+
+- `qualia/neuro_plastic.py`: la plasticidad parte de la identidad (antes pesos a 0 → anulaba todas las
+  emociones tras la primera experiencia), normaliza por filas y admite emociones nuevas.
+- `qualia/emotional_rnn.py` + `qualia/spirit.py`: `EmotionalRNN.expand_inputs` y crecimiento del predictor
+  al aparecer emociones nuevas (antes se perdían).
+- `orchestrator/synthetic_loop.py`: pesos PAD por defecto (`DEFAULT_PAD_WEIGHTS`, parámetro
+  `emotion_simulator`), estado `qualia` persistente, las entradas ya no se aplican hasta 3 veces por ciclo
+  y el foco de atención no se acumula como modulador.
+
+- `qualia/spirit.py`: nuevo parámetro `atenuacion` (por defecto 0.9). Antes de cada experiencia las
+  emociones previas se multiplican por ese factor, así que el espíritu sale de la desconexión
+  (con 0.9, tras ~7 experiencias positivas; 0.85 → 4; 0.95 → 14). `atenuacion=1.0` mantiene el
+  comportamiento original, en el que tristeza + miedo > 0.8 dejaba la desconexión permanente.
+
+## Notas sobre AGIX 1.11.0 detectadas al integrarlo
+
+- `agix razonar` solo deriva un hecho por llamada (no alcanza el cierre); por eso `agix_logic_infer` usa su propio bucle.
+- Importación circular: hay que importar `agix.memory` antes de `agix.reasoning.neuro_symbolic`.
+- `agix.memory.experiential.PADState` es un stub y `guardar()` falla si `emocion` es un `PADState`; aquí se pasa como dict.
+- `NeuroSymbolicBridge`/`ConceptClassifier` usan vectores aleatorios (no semánticos); `QualiaEngine` requiere torch/jax.
+- `EthicalDilemmaSimulator.simulate_scenario` ignora el texto de entrada.
+- `GestorDeMemoria.buscar_similar` usa difflib sobre la cadena completa: casi no encuentra consultas cortas.

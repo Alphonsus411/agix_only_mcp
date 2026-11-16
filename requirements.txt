@@ -1,0 +1,2 @@
+agix[fuzzy,game_theory]==1.11.0
+mcp>=2.3,<3

@@ -1,0 +1,274 @@
+﻿diff --git a/src/agix/qualia/neuro_plastic.py b/src/agix/qualia/neuro_plastic.py
+index 9a2c751..22f968a 100644
+--- a/src/agix/qualia/neuro_plastic.py
++++ b/src/agix/qualia/neuro_plastic.py
+@@ -3,7 +3,17 @@ from ..learning.plasticity import HebbianPlasticity
+ 
+ 
+ class EmotionalPlasticity:
+-    """Gestiona la plasticidad de las emociones mediante HebbianPlasticity."""
++    """Gestiona la plasticidad de las emociones mediante HebbianPlasticity.
++
++    La matriz de pesos parte de la identidad: sin aprendizaje previo, ``adjust``
++    devuelve las mismas emociones. Cada ``update`` refuerza de forma hebbiana las
++    emociones que se activan juntas, y ``adjust`` aplica la matriz normalizada por
++    filas, de modo que cada emoción resultante es una mezcla convexa de las de
++    entrada (no puede crecer sin límite ni anularse por completo).
++
++    Las emociones que aparecen por primera vez se añaden al modelo con peso
++    identidad, conservando lo aprendido para las anteriores.
++    """
+ 
+     def __init__(self, learning_rate: float = 0.01):
+         self.learning_rate = learning_rate
+@@ -11,24 +21,46 @@ class EmotionalPlasticity:
+         self.emotion_order = []
+ 
+     def _ensure_model(self, emociones: dict) -> None:
++        nuevas = sorted(k for k in emociones if k not in self.emotion_order)
+         if self.model is None:
+-            self.emotion_order = sorted(emociones.keys())
++            self.emotion_order = nuevas
+             size = len(self.emotion_order)
+             self.model = HebbianPlasticity(size, size, learning_rate=self.learning_rate)
+-            # Inicializar pesos en cero para reproducibilidad
+-            self.model.weights[:] = 0.0
++            # Identidad: sin aprendizaje, la plasticidad no altera las emociones
++            self.model.weights = np.eye(size)
++            return
++        if nuevas:
++            old = self.model.weights
++            n_old = len(self.emotion_order)
++            self.emotion_order = self.emotion_order + nuevas
++            weights = np.eye(len(self.emotion_order))
++            weights[:n_old, :n_old] = old
++            self.model.weights = weights
++
++    def _vector(self, emociones: dict) -> np.ndarray:
++        return np.array([float(emociones.get(e, 0.0)) for e in self.emotion_order])
+ 
+     def update(self, emociones: dict) -> None:
+         """Actualiza la plasticidad a partir del estado emocional."""
++        if not emociones:
++            return
+         self._ensure_model(emociones)
+-        vec = np.array([emociones.get(e, 0.0) for e in self.emotion_order])
++        vec = self._vector(emociones)
+         self.model.update(vec, vec)
+ 
+     def adjust(self, emociones: dict) -> dict:
+-        """Devuelve las emociones moduladas por los pesos aprendidos."""
+-        if self.model is None:
+-            return emociones
+-        vec = np.array([emociones.get(e, 0.0) for e in self.emotion_order])
+-        mod = self.model.forward(vec)
+-        mod = np.clip(mod, 0.0, 1.0)
+-        return {e: float(mod[i]) for i, e in enumerate(self.emotion_order)}
++        """Devuelve las emociones moduladas por los pesos aprendidos.
++
++        Las emociones que el modelo aún no conoce se devuelven sin cambios.
++        """
++        if self.model is None or not emociones:
++            return dict(emociones)
++        vec = self._vector(emociones)
++        weights = np.clip(self.model.weights, 0.0, None)
++        row_sums = weights.sum(axis=1, keepdims=True)
++        row_sums[row_sums == 0] = 1.0
++        mod = np.clip((weights / row_sums) @ vec, 0.0, 1.0)
++        resultado = {e: float(mod[i]) for i, e in enumerate(self.emotion_order)}
++        for k, v in emociones.items():
++            resultado.setdefault(k, v)
++        return resultado
+diff --git a/src/agix/qualia/emotional_rnn.py b/src/agix/qualia/emotional_rnn.py
+index 28be4f5..6d11cc6 100644
+--- a/src/agix/qualia/emotional_rnn.py
++++ b/src/agix/qualia/emotional_rnn.py
+@@ -51,6 +51,33 @@ class EmotionalRNN:
+         if self.rnn_type == "lstm":
+             self.c = np.zeros(self.hidden_size)
+ 
++    # ------------------------------------------------------------------
++    def expand_inputs(self, extra: int) -> None:
++        """Añade ``extra`` dimensiones de entrada/salida conservando lo aprendido.
++
++        Las nuevas entradas empiezan con pesos nulos (no alteran el estado oculto)
++        y las nuevas salidas con pesos pequeños aleatorios.
++        """
++        if extra <= 0:
++            return
++        rng = np.random.default_rng(42 + self.input_size)
++        old_in = self.input_size
++        self.input_size += extra
++        self.output_size = self.input_size
++        if self.rnn_type == "rnn":
++            self.Wxh = np.hstack([self.Wxh, np.zeros((self.hidden_size, extra))])
++        else:
++            # En LSTM las columnas de entrada van antes que las del estado oculto
++            for name in ("Wf", "Wi", "Wc", "Wo"):
++                w = getattr(self, name)
++                setattr(
++                    self,
++                    name,
++                    np.hstack([w[:, :old_in], np.zeros((w.shape[0], extra)), w[:, old_in:]]),
++                )
++        self.Why = np.vstack([self.Why, rng.normal(0, 0.1, (extra, self.hidden_size))])
++        self.by = np.concatenate([self.by, np.zeros(extra)])
++
+     # ------------------------------------------------------------------
+     def _sigmoid(self, x: np.ndarray) -> np.ndarray:
+         return 1 / (1 + np.exp(-x))
+diff --git a/src/agix/qualia/spirit.py b/src/agix/qualia/spirit.py
+index d38db80..d5be1f7 100644
+--- a/src/agix/qualia/spirit.py
++++ b/src/agix/qualia/spirit.py
+@@ -38,6 +38,7 @@ class QualiaSpirit:
+        middleware: QualiaMiddleware | None = None,
+        sync_interval: float = 60.0,
+        emotion_simulator: 'EmotionSimulator' | None = None,
++       atenuacion: float = 0.9,
+     ):
+         """Crea un ``QualiaSpirit``.
+ 
+@@ -57,7 +58,15 @@ class QualiaSpirit:
+             Middleware opcional para sincronizar el estado con otros agentes.
+         sync_interval:
+             Intervalo en segundos para realizar ``pull_state`` automático.
++        atenuacion:
++            Factor (0..1] por el que se multiplican las emociones previas antes de
++            cada nueva experiencia, para que se desvanezcan con el tiempo. ``1.0``
++            desactiva la atenuación (comportamiento anterior: las emociones no
++            decaen nunca y la desconexión puede volverse permanente).
+         """
++        if not 0.0 < atenuacion <= 1.0:
++            raise ValueError("atenuacion debe estar en el intervalo (0, 1]")
++        self.atenuacion = atenuacion
+         self.nombre = nombre
+         self.edad_aparente = edad_aparente
+         self.estado_emocional = EmotionalState()
+@@ -106,6 +115,9 @@ class QualiaSpirit:
+         if self.plasticidad:
+             ajuste = self.ajustar_emociones({tipo_emocion: carga})
+             carga = ajuste.get(tipo_emocion, carga)
++        # Las emociones previas se desvanecen antes de sentir la nueva
++        if self.atenuacion < 1.0:
++            self.estado_emocional.atenuar(self.atenuacion)
+         self.estado_emocional.sentir(tipo_emocion, carga)
+         self.recuerdos.append((evento, tipo_emocion, carga))
+         # Mantener el estado interno sincronizado
+@@ -192,10 +204,21 @@ class QualiaSpirit:
+ 
+     # ------------------------------------------------------------------
+     def _ensure_predictor(self) -> None:
+-        if self.predictor is None and self.estado_emocional.emociones:
+-            self.emotion_order = sorted(self.estado_emocional.emociones.keys())
+-            size = len(self.emotion_order)
+-            self.predictor = EmotionalRNN(size)
++        emociones = self.estado_emocional.emociones
++        if not emociones:
++            return
++        if self.predictor is None:
++            self.emotion_order = sorted(emociones.keys())
++            self.predictor = EmotionalRNN(len(self.emotion_order))
++            return
++        nuevas = sorted(k for k in emociones if k not in self.emotion_order)
++        if nuevas:
++            # Crecer la RNN y el historial sin perder lo aprendido
++            self.emotion_order = self.emotion_order + nuevas
++            self.predictor.expand_inputs(len(nuevas))
++            self._historial_vectores = [
++                np.concatenate([v, np.zeros(len(nuevas))]) for v in self._historial_vectores
++            ]
+ 
+     def _registrar_vector(self) -> None:
+         self._ensure_predictor()
+diff --git a/src/agix/orchestrator/synthetic_loop.py b/src/agix/orchestrator/synthetic_loop.py
+index 23b00a6..8b178d7 100644
+--- a/src/agix/orchestrator/synthetic_loop.py
++++ b/src/agix/orchestrator/synthetic_loop.py
+@@ -38,16 +38,34 @@ class SyntheticLoop:
+     controller:
+         Núcleo de control usado para ejecutar acciones. Si no se proporciona,
+         se genera uno mínimo por defecto.
++    emotion_simulator:
++        Simulador PAD. Si no se proporciona, se crea uno con
++        :data:`DEFAULT_PAD_WEIGHTS` para que las entradas éticas y de riesgo
++        tengan efecto emocional.
+     """
+ 
++    #: Efecto PAD por defecto de las entradas que el ciclo usa en la evaluación ética.
++    DEFAULT_PAD_WEIGHTS: Dict[str, PADState] = {
++        "risk": PADState(placer=-0.4, activacion=0.5, dominancia=-0.3),
++        "impact": PADState(placer=0.1, activacion=0.4, dominancia=0.1),
++        "pro_vida": PADState(placer=0.3, activacion=0.1, dominancia=0.1),
++        "no_dano": PADState(placer=0.2, activacion=-0.1, dominancia=0.2),
++        "respeto": PADState(placer=0.2, activacion=0.0, dominancia=0.1),
++    }
++
+     def __init__(
+         self,
+         perception: SensorMap,
+         self_model: SelfModel | None = None,
+         controller: ControllerCore | None = None,
++        emotion_simulator: EmotionSimulator | None = None,
+     ) -> None:
+         self.perception = perception
+-        self.emotion = EmotionSimulator()
++        self.emotion = emotion_simulator or EmotionSimulator(
++            pesos={k: PADState(v.placer, v.activacion, v.dominancia)
++                   for k, v in self.DEFAULT_PAD_WEIGHTS.items()}
++        )
++        self._foco_actual: AttentionFocus | None = None
+         self.self_model = self_model or SelfModel()
+         self.alignment = AlignmentInterface()
+ 
+@@ -57,8 +75,10 @@ class SyntheticLoop:
+             controller = ControllerCore(policy, performance_tracker=tracker)
+         self.controller = controller
+ 
++        # Estado cualitativo persistente entre ciclos, compartido con la reflexión
++        self.qualia = EmotionalState()
+         self.reflection = MetaReflectionEngine(
+-            emotions=self.emotion, qualia=EmotionalState()
++            emotions=self.emotion, qualia=self.qualia
+         )
+ 
+         # Registro de hooks para integración externa
+@@ -95,9 +115,19 @@ class SyntheticLoop:
+         self._emit("after_perception", {"entradas": entradas})
+ 
+         # 2. Simulación emocional
+-        self.emotion.registrar_modulador(foco)
+-        estado_emocional_global = EmotionalState()
+-        self.emotion.actualizar(entradas, self.self_model.state, estado_emocional_global)
++        # El foco se recrea en cada ciclo: sustituir el anterior en vez de acumularlos
++        moduladores = self.emotion._moduladores
++        if self._foco_actual is not None and any(m is self._foco_actual for m in moduladores):
++            idx = next(i for i, m in enumerate(moduladores) if m is self._foco_actual)
++            moduladores[idx] = foco
++        else:
++            self.emotion.registrar_modulador(foco)
++        self._foco_actual = foco
++        # Excluir del estado interno las entradas recién copiadas para no contarlas dos veces
++        estado_interno = {
++            k: v for k, v in self.self_model.state.items() if k not in entradas
++        }
++        self.emotion.actualizar(entradas, estado_interno, self.qualia)
+         estado_emocional: PADState = self.emotion.estado()
+         self.self_model.update_state("emocion", estado_emocional)
+         self._emit("after_emotion", {"emocion": estado_emocional})
+@@ -144,10 +174,13 @@ class SyntheticLoop:
+ 
+         # 5. Meta‑reflexión
+         pensamiento = reflexor.resumen_reflexivo()
++        # Las entradas ya se integraron en el paso 2: no volver a aplicarlas al PAD
+         context = {
+             "thought": pensamiento,
+-            "sensations": entradas,
+-            "self_state": self.self_model.state,
++            "sensations": {},
++            "self_state": {
++                k: v for k, v in self.self_model.state.items() if k not in entradas
++            },
+         }
+         texto_reflexion, estado_emocional_final = self.reflection.run_internal_dialogue(
+             context
