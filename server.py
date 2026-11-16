@@ -51,6 +51,16 @@ with contextlib.redirect_stdout(sys.stderr):
     from agix.emotion.emotion_simulator import EmotionSimulator, PADState
     from agix.qualia.qualia_core import EmotionalState
     from agix.qualia.spirit import QualiaSpirit
+    from agix.qualia.neuro_plastic import EmotionalPlasticity
+    from agix.qualia.emotional_rnn import EmotionalRNN
+    from agix.qualia.qualia_spirit_core import QualiaSpiritCore
+    from agix.qualia.dream_bank import DreamBank
+    from agix.identity.personality import PersonalityProfile
+    from agix.learning.plasticity import HebbianPlasticity
+    from agix.perception.sensor_map import Sensor, SensorMap
+    with warnings.catch_warnings():  # el paquete orchestrator importa el hub y avisa del token
+        warnings.simplefilter("ignore")
+        from agix.orchestrator.synthetic_loop import SyntheticLoop
 
 from mcp.server.mcpserver import MCPServer
 
@@ -65,7 +75,14 @@ Herramientas de AGIX (framework de Adolfo González) para apoyar el razonamiento
 - agix_ontology_*: grafo persistente de conceptos, atributos y relaciones.
 - agix_ethics_judge / agix_intention_evaluate / agix_meta_evaluate / agix_goal_register:
   evaluación ética e intencional; requieren que traduzcas el plan a puntuaciones 0..1.
-- agix_emotion_update / agix_qualia_*: modelo afectivo PAD y espíritu Qualia (experimental).
+- agix_emotion_update: cálculo puntual de un estado PAD.
+- agix_qualia_experience / _state / _configure: espíritu Qualia persistente entre sesiones, con
+  personalidad, atenuación, plasticidad hebbiana, RNN que predice el siguiente estado y modos
+  (euforia/desconexión).
+- agix_cognitive_cycle: ciclo completo percepción → emoción → ética → control → reflexión;
+  aborta acciones con ética < 0.6.
+- agix_aesthetic_decide: elegir entre opciones por armonía; agix_dream_record / agix_dreams_recent:
+  banco de sueños persistente.
 - agix_fagi_index, agix_harmony, agix_simulate_agent: métricas y simulación de agentes.
 Las puntuaciones éticas/afectivas son heurísticas: tómalas como una segunda opinión, no como verdad.
 """
@@ -140,9 +157,107 @@ try:
 except Exception as exc:
     log.warning("No se pudo cargar la ontología: %s", exc)
 
-_spirit = QualiaSpirit(nombre="Claude")
+# --- Espíritu Qualia persistente --------------------------------------------
+QUALIA_CONFIG = DATA_DIR / "qualia_config.json"
+QUALIA_STATE = "qualia_estado.json"  # relativo al cwd (DATA_DIR): EpisodicMemory exige rutas dentro del cwd
+QUALIA_MODELS = DATA_DIR / "qualia_modelos.json"
+DREAMS_FILE = "suenos.json"
+
+DEFAULT_QUALIA_CONFIG = {
+    "nombre": "Claude",
+    "optimismo": 0.6,
+    "introversion": 0.4,
+    "energia": 0.6,
+    "atenuacion": 0.9,
+    "plasticidad": True,
+}
+
+_RNN_PARAMS = ("Wxh", "Whh", "bh", "Wf", "Wi", "Wc", "Wo", "bf", "bi", "bc", "bo", "Why", "by")
+
+
+def _load_qualia_config() -> dict:
+    cfg = dict(DEFAULT_QUALIA_CONFIG)
+    if QUALIA_CONFIG.exists():
+        try:
+            cfg.update(json.loads(QUALIA_CONFIG.read_text(encoding="utf-8")))
+        except Exception as exc:
+            log.warning("Configuración de Qualia ilegible, uso la de por defecto: %s", exc)
+    return cfg
+
+
+def _new_spirit(cfg: dict) -> QualiaSpirit:
+    personality = PersonalityProfile(cfg["optimismo"], cfg["introversion"], cfg["energia"])
+    return QualiaSpirit(nombre=cfg["nombre"], plasticidad=bool(cfg["plasticidad"]),
+                        personality=personality, atenuacion=float(cfg["atenuacion"]))
+
+
+def _save_models(sp: QualiaSpirit) -> None:
+    data: dict[str, Any] = {}
+    if sp.plasticidad is not None and sp.plasticidad.model is not None:
+        data["plasticidad"] = {"order": sp.plasticidad.emotion_order,
+                               "weights": sp.plasticidad.model.weights.tolist()}
+    if sp.predictor is not None:
+        p = sp.predictor
+        data["rnn"] = {
+            "order": sp.emotion_order, "type": p.rnn_type, "hidden": p.hidden_size,
+            "params": {n: getattr(p, n).tolist() for n in _RNN_PARAMS if hasattr(p, n)},
+            "history": [v.tolist() for v in sp._historial_vectores],
+        }
+    QUALIA_MODELS.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _load_models(sp: QualiaSpirit) -> None:
+    if not QUALIA_MODELS.exists():
+        return
+    data = json.loads(QUALIA_MODELS.read_text(encoding="utf-8"))
+    if "plasticidad" in data and sp.plasticidad is not None:
+        pl = data["plasticidad"]
+        n = len(pl["order"])
+        sp.plasticidad.emotion_order = list(pl["order"])
+        sp.plasticidad.model = HebbianPlasticity(n, n, learning_rate=sp.plasticidad.learning_rate)
+        sp.plasticidad.model.weights = np.array(pl["weights"], dtype=float)
+    if "rnn" in data:
+        r = data["rnn"]
+        rnn = EmotionalRNN(len(r["order"]), hidden_size=r["hidden"], rnn_type=r["type"])
+        for name, value in r["params"].items():
+            setattr(rnn, name, np.array(value, dtype=float))
+        sp.predictor = rnn
+        sp.emotion_order = list(r["order"])
+        sp._historial_vectores = [np.array(v, dtype=float) for v in r["history"]]
+
+
+def _save_spirit() -> None:
+    try:
+        with _quiet():
+            _spirit.guardar_estado(QUALIA_STATE)
+        _save_models(_spirit)
+    except Exception as exc:  # la persistencia no debe romper la herramienta
+        log.warning("No se pudo guardar el estado de Qualia: %s", exc)
+
+
+def _load_spirit() -> QualiaSpirit:
+    cfg = _load_qualia_config()
+    sp = _new_spirit(cfg)
+    if Path(QUALIA_STATE).exists():
+        try:
+            with _quiet():
+                sp.cargar_estado(QUALIA_STATE)
+            _load_models(sp)
+        except Exception as exc:
+            log.warning("No se pudo restaurar el estado de Qualia: %s", exc)
+    return sp
+
+
+_spirit = _load_spirit()
 _meta = DynamicMetaEvaluator(spirit=_spirit)
 _goals = GoalEngine()
+_aesthetic_core = QualiaSpiritCore()
+_dreams = DreamBank()
+try:
+    _dreams.importar(DREAMS_FILE)
+except Exception as exc:
+    log.warning("No se pudo cargar el banco de sueños: %s", exc)
+_loop: SyntheticLoop | None = None
 
 # --------------------------------------------------------------------------- razonamiento lógico
 
@@ -670,28 +785,184 @@ def agix_emotion_update(
             "tone": qualia.tono_general() if feelings else None}
 
 
+def _mode(sp: QualiaSpirit) -> str:
+    return "euforia" if sp.modo_euforia else "desconexion" if sp.modo_desconexion else "normal"
+
+
+def _associations(sp: QualiaSpirit, top: int = 5) -> list[dict]:
+    """Co-activaciones aprendidas por la plasticidad (pesos fuera de la diagonal)."""
+    p = sp.plasticidad
+    if p is None or p.model is None:
+        return []
+    w, order, pairs = p.model.weights, p.emotion_order, []
+    for i, a in enumerate(order):
+        for j, b in enumerate(order):
+            if i != j and w[i, j] > 1e-6:
+                pairs.append({"from": b, "to": a, "weight": round(float(w[i, j]), 4)})
+    return sorted(pairs, key=lambda x: x["weight"], reverse=True)[:top]
+
+
 @server.tool()
 def agix_qualia_experience(event: str, charge: float, emotion: str) -> dict:
-    """Hace que el espíritu Qualia de la sesión viva una experiencia y reflexione.
+    """El espíritu Qualia persistente vive una experiencia, reflexiona y predice su siguiente estado.
 
-    charge: intensidad 0..1; emotion: tipo (alegría, miedo, curiosidad, tristeza...).
+    charge: intensidad 0..1; emotion: alegría, tristeza, miedo, enojo, sorpresa, curiosidad u otra.
+    Aplica atenuación de emociones previas, plasticidad hebbiana y entrena online la RNN emocional.
+    El estado se guarda en disco y sobrevive a reinicios.
     """
     with _quiet():
         _spirit.experimentar(event, float(charge), emotion)
         reflection = _spirit.reflexionar()
-    return {"reflection": reflection, "emotions": _plain(_spirit.estado_emocional.emociones),
-            "tone": _spirit.estado_emocional.tono_general()}
+        prediction = _spirit.predecir_futuro()
+    _save_spirit()
+    return _plain({"reflection": reflection, "emotions": _spirit.estado_emocional.emociones,
+                   "tone": _spirit.estado_emocional.tono_general(), "mode": _mode(_spirit),
+                   "predicted_next": prediction})
 
 
 @server.tool()
-def agix_qualia_state() -> dict:
-    """Estado actual del espíritu Qualia: emociones, tono, diario y metaevaluación."""
+def agix_qualia_state(diary_entries: int = 20) -> dict:
+    """Estado completo del espíritu Qualia: emociones, tono, modo, predicción, asociaciones
+    aprendidas, diario reciente, introspección (SelfModel), configuración y metaevaluación."""
     with _quiet():
-        diario = _spirit.diario()
         meta = _spirit.metaevaluar()
-    return _plain({"emotions": _spirit.estado_emocional.emociones,
-                   "tone": _spirit.estado_emocional.tono_general(),
-                   "diary": diario, "meta": meta})
+        prediction = _spirit.predecir_futuro()
+        intro = _spirit.introspeccionar()
+    intro = {k: v for k, v in intro.items() if k != "state"}
+    return _plain({"name": _spirit.nombre, "emotions": _spirit.estado_emocional.emociones,
+                   "tone": _spirit.estado_emocional.tono_general(), "mode": _mode(_spirit),
+                   "predicted_next": prediction, "learned_associations": _associations(_spirit),
+                   "diary": _spirit.diario()[-diary_entries:], "diary_total": len(_spirit.diario()),
+                   "introspection": intro, "config": _load_qualia_config(), "meta": meta})
+
+
+@server.tool()
+def agix_qualia_configure(
+    decay: float | None = None,
+    plasticity: bool | None = None,
+    name: str | None = None,
+    optimism: float | None = None,
+    introversion: float | None = None,
+    energy: float | None = None,
+    reset: bool = False,
+) -> dict:
+    """Configura el espíritu Qualia.
+
+    decay: factor de atenuación (0..1]; 1.0 = las emociones no decaen. Se aplica al momento.
+    plasticity: activa/desactiva la plasticidad hebbiana. Se aplica al momento.
+    name, optimism, introversion, energy (0..1): identidad y personalidad; solo se aplican al
+        renacer el espíritu, así que requieren reset=True.
+    reset: borra emociones, diario y modelos aprendidos y crea un espíritu nuevo con la configuración.
+    """
+    global _spirit
+    cfg = _load_qualia_config()
+    if decay is not None:
+        if not 0.0 < decay <= 1.0:
+            raise ValueError("decay debe estar en (0, 1]")
+        cfg["atenuacion"] = float(decay)
+    if plasticity is not None:
+        cfg["plasticidad"] = bool(plasticity)
+    identity = {"nombre": name, "optimismo": optimism, "introversion": introversion, "energia": energy}
+    identity = {k: v for k, v in identity.items() if v is not None}
+    for k, v in identity.items():
+        if k != "nombre" and not 0.0 <= v <= 1.0:
+            raise ValueError(f"{k} debe estar en [0, 1]")
+    if identity and not reset:
+        raise ValueError("Cambiar nombre o personalidad requiere reset=True (crea un espíritu nuevo)")
+    cfg.update(identity)
+    QUALIA_CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if reset:
+        for f in (Path(QUALIA_STATE), QUALIA_MODELS):
+            f.unlink(missing_ok=True)
+        _spirit = _new_spirit(cfg)
+        _meta.spirit = _spirit
+    else:
+        _spirit.atenuacion = cfg["atenuacion"]
+        if cfg["plasticidad"] and _spirit.plasticidad is None:
+            _spirit.plasticidad = EmotionalPlasticity()
+        elif not cfg["plasticidad"]:
+            _spirit.plasticidad = None
+    _save_spirit()
+    return _plain({"config": cfg, "reset": reset, "emotions": _spirit.estado_emocional.emociones,
+                   "tone": _spirit.estado_emocional.tono_general(), "mode": _mode(_spirit)})
+
+
+@server.tool()
+def agix_cognitive_cycle(inputs: dict[str, float], reset: bool = False) -> dict:
+    """Ejecuta un ciclo cognitivo completo de AGIX (SyntheticLoop):
+    percepción → atención → emoción PAD → juicio ético → control (o aborto) → metarreflexión.
+
+    inputs: señales 0..1. Claves con efecto ético/emocional: pro_vida, no_dano, respeto, risk, impact;
+        se aceptan otras como contexto. Si la ética da < 0.6 la acción se aborta.
+    reset: reinicia el bucle (estado PAD, modelo propio y memoria narrativa acumulados).
+    El estado PAD se acumula entre ciclos de la misma sesión.
+    """
+    global _loop
+    if reset or _loop is None:
+        _loop = SyntheticLoop(SensorMap())
+    sensors = _loop.perception.sensores
+    for name in list(sensors):
+        if name not in inputs:  # que no persistan señales de ciclos anteriores
+            sensors[name].ultima_entrada = None
+    for name, value in inputs.items():
+        if name not in sensors:
+            _loop.perception.registrar_sensor(Sensor(name, "interno"))
+        _loop.perception.enviar_entrada(name, float(value))
+    with _quiet():
+        out = _loop.cycle()
+    pad = out["emocion"]
+    return _plain({
+        "inputs": out["entradas"],
+        "pad": {"placer": pad.placer, "activacion": pad.activacion, "dominancia": pad.dominancia},
+        "ethics": out["etica"],
+        "action": out["accion"],
+        "aborted": bool(out["accion"].get("aborted")),
+        "reflection": out["reflexion"],
+        "self_organization": out["yo"].get("self_organization_score"),
+    })
+
+
+@server.tool()
+def agix_aesthetic_decide(options: list[dict]) -> dict:
+    """Elige entre opciones por armonía (QualiaSpiritCore + AestheticEngine).
+
+    options: [{"nombre": "A", "simetría": 0..1, "coherencia": 0..1, "emotividad": 0..1}, ...]
+    (también se aceptan "simetria" sin tilde). Pesos: simetría 0.7, coherencia 0.8, emotividad 0.9.
+    Devuelve la elegida, su explicación y la puntuación y categoría de cada opción.
+    """
+    if not options:
+        raise ValueError("Se necesita al menos una opción")
+    norm = []
+    for o in options:
+        o = dict(o)
+        if "simetria" in o and "simetría" not in o:
+            o["simetría"] = o.pop("simetria")
+        norm.append(o)
+    motor = _aesthetic_core.motor_estetico
+    scored = [{"nombre": o.get("nombre", f"opción {i + 1}"), "score": motor.evaluar(o),
+               "category": motor.clasificar(motor.evaluar(o))} for i, o in enumerate(norm)]
+    with _quiet():
+        chosen = _aesthetic_core.decidir(norm)
+        explanation = _aesthetic_core.explicar_decision()
+    return _plain({"chosen": chosen.get("nombre", chosen), "explanation": explanation,
+                   "affect": chosen.get("afecto"), "options": scored,
+                   "core_emotion": _aesthetic_core.estado_emocional.tono_general()})
+
+
+@server.tool()
+def agix_dream_record(content: str, emotion: str, intensity: float) -> dict:
+    """Guarda un sueño, visión o recuerdo simbólico en el DreamBank persistente (suenos.json)."""
+    _dreams.registrar_sueno(content, emotion, float(intensity))
+    _dreams.exportar(DREAMS_FILE)
+    return {"stored": _dreams.suenos[-1], "total": len(_dreams.suenos)}
+
+
+@server.tool()
+def agix_dreams_recent(n: int = 5) -> dict:
+    """Últimos n sueños del DreamBank, en forma poética y en bruto."""
+    return {"poetic": _dreams.resumen_reciente(n), "raw": _dreams.suenos[-n:],
+            "total": len(_dreams.suenos)}
 
 
 # --------------------------------------------------------------------------- métricas y simulación

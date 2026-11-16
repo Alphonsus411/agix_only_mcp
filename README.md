@@ -11,7 +11,8 @@ claude mcp add --scope user agix -e PYTHONIOENCODING=utf-8 -- "%CD%\.venv\Script
 ```
 
 Datos persistentes en `%USERPROFILE%\.agix-mcp` (cambiable con `AGIX_MCP_DATA`):
-`memoria.json` (experiencias) y `ontologia.json` (conceptos).
+`memoria.json` (experiencias), `ontologia.json` (conceptos), `qualia_config.json`,
+`qualia_estado.json` + `qualia_modelos.json` (espíritu Qualia y sus pesos aprendidos) y `suenos.json`.
 
 ## Herramientas
 
@@ -27,8 +28,12 @@ Datos persistentes en `%USERPROFILE%\.agix-mcp` (cambiable con `AGIX_MCP_DATA`):
 | `agix_intention_evaluate` | `IntentionEvaluator` | Consecuencias, conflicto de metas, conducta |
 | `agix_meta_evaluate` | `DynamicMetaEvaluator` | Coherencia, ética, tono afectivo (estado de sesión) |
 | `agix_goal_register` | `GoalEngine` | Metas con filtro ético (< 0.6 se rechaza) |
-| `agix_emotion_update` | `EmotionSimulator` | Estado PAD |
-| `agix_qualia_experience/state` | `QualiaSpirit` | Experiencias, reflexión y diario |
+| `agix_emotion_update` | `EmotionSimulator` | Estado PAD puntual |
+| `agix_qualia_experience/state` | `QualiaSpirit` | Espíritu persistente: emociones, modo, predicción RNN, asociaciones hebbianas, diario, introspección |
+| `agix_qualia_configure` | `QualiaSpirit` + `PersonalityProfile` | Atenuación y plasticidad en caliente; nombre/personalidad con `reset` |
+| `agix_cognitive_cycle` | `SyntheticLoop` | Percepción → emoción PAD → ética → control/aborto → metarreflexión |
+| `agix_aesthetic_decide` | `QualiaSpiritCore` + `AestheticEngine` | Decisión por armonía con explicación |
+| `agix_dream_record` / `agix_dreams_recent` | `DreamBank` | Banco de sueños persistente |
 | `agix_fagi_index`, `agix_harmony`, `agix_simulate_agent` | `evaluation`, `AutoAgent` | Métricas y simulación |
 
 ## Correcciones locales de AGIX (solo en este `.venv`)
