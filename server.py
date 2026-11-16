@@ -57,6 +57,7 @@ with contextlib.redirect_stdout(sys.stderr):
     from agix.qualia.neuro_plastic import EmotionalPlasticity
     from agix.qualia.emotional_rnn import EmotionalRNN
     from agix.qualia.qualia_spirit_core import QualiaSpiritCore
+    from agix.qualia.aesthetic_engine import AestheticEngine
     from agix.qualia.dream_bank import DreamBank
     from agix.identity.personality import PersonalityProfile
     from agix.identity.identity_core import SyntheticIdentity
@@ -405,7 +406,6 @@ def _load_spirit() -> QualiaSpirit:
 _spirit = _load_spirit()
 _meta = DynamicMetaEvaluator(spirit=_spirit)
 _goals = GoalEngine()
-_aesthetic_core = QualiaSpiritCore()
 _dreams = DreamBank()
 try:
     _dreams.importar(DREAMS_FILE)
@@ -1528,7 +1528,9 @@ def agix_aesthetic_decide(options: list[dict]) -> dict:
 
     options: [{"nombre": "A", "simetría": 0..1, "coherencia": 0..1, "emotividad": 0..1}, ...]
     (también se aceptan "simetria" sin tilde). Pesos: simetría 0.7, coherencia 0.8, emotividad 0.9.
-    Devuelve la elegida, su explicación y la puntuación y categoría de cada opción.
+    Devuelve la elegida, su explicación, la puntuación y categoría de cada opción y el afecto de
+    la decisión: la intensidad es la puntuación de la elegida, y la emoción (gozo, serenidad o
+    tristeza según la categoría) es la de esta decisión, sin arrastrar las anteriores.
     """
     if not options:
         raise ValueError("Se necesita al menos una opción")
@@ -1538,15 +1540,23 @@ def agix_aesthetic_decide(options: list[dict]) -> dict:
         if "simetria" in o and "simetría" not in o:
             o["simetría"] = o.pop("simetria")
         norm.append(o)
-    motor = _aesthetic_core.motor_estetico
+    motor = AestheticEngine()
     scored = [{"nombre": o.get("nombre", f"opción {i + 1}"), "score": motor.evaluar(o),
                "category": motor.clasificar(motor.evaluar(o))} for i, o in enumerate(norm)]
+    best = max(s["score"] for s in scored)
+    # Antes: un núcleo global con intensidad_amor fija (1.0), así que el afecto decía siempre
+    # "Con amor (intensidad 1.00)" con puntuaciones de 0.69, y su estado emocional acumulaba todas
+    # las decisiones del proceso (y se perdía al reiniciar). Ahora, un núcleo por decisión con la
+    # intensidad igual a la puntuación de la elegida.
+    core = QualiaSpiritCore(intensidad_amor=best)
     with _quiet():
-        chosen = _aesthetic_core.decidir(norm)
-        explanation = _aesthetic_core.explicar_decision()
+        chosen = core.decidir(norm)
+        explanation = core.explicar_decision()
+    emotions = core.estado_emocional.emociones
+    tone = core.estado_emocional.tono_general()
     return _plain({"chosen": chosen.get("nombre", chosen), "explanation": explanation,
                    "affect": chosen.get("afecto"), "options": scored,
-                   "core_emotion": _aesthetic_core.estado_emocional.tono_general()})
+                   "core_emotion": tone, "core_emotion_intensity": emotions.get(tone)})
 
 
 @server.tool()

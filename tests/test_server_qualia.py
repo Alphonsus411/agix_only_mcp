@@ -118,6 +118,22 @@ def test_decision_estetica(server):
     assert {o["nombre"] for o in r["options"]} == {"caótica", "armónica"}
 
 
+def test_afecto_estetico_proporcional_a_la_puntuacion(server):
+    # Caso real: puntuación 0.688 y afecto "Con amor (intensidad 1.00)"
+    r = server.agix_aesthetic_decide([
+        {"nombre": "suma", "simetría": 0.5, "coherencia": 0.4, "emotividad": 0.7},
+        {"nombre": "balance", "simetría": 0.8, "coherencia": 0.8, "emotividad": 0.5},
+    ])
+    assert r["chosen"] == "balance"
+    assert r["affect"] == "Con amor (intensidad 0.69)"
+    assert r["core_emotion"] == "gozo" and r["core_emotion_intensity"] == pytest.approx(0.688)
+    flojo = server.agix_aesthetic_decide([
+        {"nombre": "a", "simetría": 0.2, "coherencia": 0.3, "emotividad": 0.2}])
+    assert flojo["affect"] == "Con amor (intensidad 0.23)"
+    # no arrastra el gozo de la decisión anterior
+    assert flojo["core_emotion"] == "tristeza"
+
+
 def test_suenos_persisten(server):
     server.agix_dream_record("un bosque de grafos", "curiosidad", 0.7)
     s2 = _restart(server)

@@ -58,7 +58,7 @@ Datos persistentes en `%USERPROFILE%\.agix-mcp` (cambiable con `AGIX_MCP_DATA`):
 | `agix_qualia_experience/state` | `QualiaSpirit` | Espíritu persistente: emociones, modo, predicción RNN, asociaciones hebbianas, diario, introspección |
 | `agix_qualia_configure` | `QualiaSpirit` + `PersonalityProfile` | Atenuación y plasticidad en caliente; nombre/personalidad con `reset` |
 | `agix_cognitive_cycle` | `SyntheticLoop` | Percepción → emoción PAD → ética → control/aborto → metarreflexión |
-| `agix_aesthetic_decide` | `QualiaSpiritCore` + `AestheticEngine` | Decisión por armonía con explicación |
+| `agix_aesthetic_decide` | `QualiaSpiritCore` + `AestheticEngine` | Decisión por armonía con explicación; afecto y emoción proporcionales a la puntuación de la elegida, sin arrastrar decisiones anteriores |
 | `agix_dream_record` / `agix_dreams_recent` | `DreamBank` | Banco de sueños persistente |
 | `agix_fagi_index`, `agix_harmony`, `agix_simulate_agent` | `evaluation`, `AutoAgent` | Métricas y simulación |
 
