@@ -324,6 +324,38 @@ def test_loop_reflexion_acotada_y_coherencia_persistente():
     assert "Eventos analizados: 10 | Coherencia global: 1.00" in salidas[-1]["reflexion"]
 
 
+def test_loop_pad_no_se_satura_con_ciclos_repetidos():
+    # Antes: P=A=D=1.00 tras unos pocos ciclos con las mismas entradas
+    loop = _loop(ETICA)
+    primero = _cycle(loop)["emocion"]
+    for _ in range(20):
+        pad = _cycle(loop)["emocion"]
+    for dim in ("placer", "activacion", "dominancia"):
+        assert getattr(pad, dim) == pytest.approx(getattr(primero, dim), abs=1e-6)
+        assert abs(getattr(pad, dim)) < 1.0
+
+
+def test_loop_pad_media_movil_entre_ciclos():
+    sm = SensorMap()
+    for k in DANINA:
+        sm.registrar_sensor(Sensor(k, "interno"))
+        sm.enviar_entrada(k, DANINA[k])
+    loop = SyntheticLoop(sm, inercia_pad=0.5)
+    a = _cycle(loop)["emocion"]
+    for k, v in ETICA.items():
+        sm.enviar_entrada(k, v)
+    b = _cycle(loop)["emocion"]
+    solo_etica = _cycle(_loop(ETICA))["emocion"]
+    assert b.placer == pytest.approx(0.5 * a.placer + 0.5 * solo_etica.placer)
+    assert a.placer < b.placer < solo_etica.placer
+
+
+@pytest.mark.parametrize("valor", [-0.1, 1.0, 1.5])
+def test_loop_inercia_invalida(valor):
+    with pytest.raises(ValueError):
+        SyntheticLoop(SensorMap(), inercia_pad=valor)
+
+
 def test_loop_acepta_simulador_propio():
     from agix.emotion.emotion_simulator import EmotionSimulator
 

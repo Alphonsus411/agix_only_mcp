@@ -78,6 +78,8 @@ Tests: `.venv\Scripts\python -m pytest tests -q`.
   y el foco de atención no se acumula como modulador. La reflexión ya no se reinserta en la memoria
   (cada ciclo anidaba entera la anterior y el texto crecía sin límite) y el registro reflexivo persiste
   entre ciclos, con `exito` = la acción superó el juicio ético (antes la coherencia salía siempre 0.00).
+  El PAD es una media móvil por ciclo (`inercia_pad`, 0.5 por defecto: mitad ánimo anterior, mitad
+  impulso del ciclo); antes solo se sumaba y con entradas parecidas llegaba a 1.00 en las tres dimensiones.
 
 - `qualia/spirit.py`: nuevo parámetro `atenuacion` (por defecto 0.9). Antes de cada experiencia las
   emociones previas se multiplican por ese factor, así que el espíritu sale de la desconexión

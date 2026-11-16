@@ -1490,7 +1490,8 @@ def agix_cognitive_cycle(inputs: dict[str, float], reset: bool = False) -> dict:
     inputs: señales 0..1. Claves con efecto ético/emocional: pro_vida, no_dano, respeto, risk, impact;
         se aceptan otras como contexto. Si la ética da < 0.6 la acción se aborta.
     reset: reinicia el bucle (estado PAD, modelo propio y memoria narrativa acumulados).
-    El estado PAD se acumula entre ciclos de la misma sesión.
+    El estado PAD es una media móvil entre ciclos de la misma sesión: 50 % el ánimo anterior y
+    50 % el impulso de las entradas del ciclo (el primer ciclo toma el impulso entero).
     coherence: proporción de acciones de la sesión del bucle que superaron el juicio ético.
     No hay entorno que dé recompensa, así que no se devuelve puntuación de la acción.
     """

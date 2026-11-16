@@ -281,10 +281,10 @@ index d38db80..6119843 100644
  
      # ------------------------------------------------------------------
 diff --git a/src/agix/orchestrator/synthetic_loop.py b/src/agix/orchestrator/synthetic_loop.py
-index 23b00a6..4df6d78 100644
+index 23b00a6..948209b 100644
 --- a/src/agix/orchestrator/synthetic_loop.py
 +++ b/src/agix/orchestrator/synthetic_loop.py
-@@ -38,16 +38,34 @@ class SyntheticLoop:
+@@ -38,16 +38,42 @@ class SyntheticLoop:
      controller:
          Núcleo de control usado para ejecutar acciones. Si no se proporciona,
          se genera uno mínimo por defecto.
@@ -309,7 +309,15 @@ index 23b00a6..4df6d78 100644
          self_model: SelfModel | None = None,
          controller: ControllerCore | None = None,
 +        emotion_simulator: EmotionSimulator | None = None,
++        inercia_pad: float = 0.5,
      ) -> None:
++        if not 0.0 <= inercia_pad < 1.0:
++            raise ValueError("inercia_pad debe estar en [0, 1)")
++        # Corrección local: el PAD solo se sumaba ciclo a ciclo y con entradas parecidas llegaba a
++        # 1.00 en las tres dimensiones. Ahora es una media móvil por ciclo:
++        # nuevo = inercia_pad * anterior + (1 - inercia_pad) * impulso del ciclo (el primero, entero).
++        self.inercia_pad = inercia_pad
++        self._ciclos = 0
          self.perception = perception
 -        self.emotion = EmotionSimulator()
 +        self.emotion = emotion_simulator or EmotionSimulator(
@@ -320,7 +328,7 @@ index 23b00a6..4df6d78 100644
          self.self_model = self_model or SelfModel()
          self.alignment = AlignmentInterface()
  
-@@ -57,8 +75,13 @@ class SyntheticLoop:
+@@ -57,8 +83,13 @@ class SyntheticLoop:
              controller = ControllerCore(policy, performance_tracker=tracker)
          self.controller = controller
  
@@ -335,7 +343,7 @@ index 23b00a6..4df6d78 100644
          )
  
          # Registro de hooks para integración externa
-@@ -95,9 +118,19 @@ class SyntheticLoop:
+@@ -95,9 +126,29 @@ class SyntheticLoop:
          self._emit("after_perception", {"entradas": entradas})
  
          # 2. Simulación emocional
@@ -354,11 +362,21 @@ index 23b00a6..4df6d78 100644
 +        estado_interno = {
 +            k: v for k, v in self.self_model.state.items() if k not in entradas
 +        }
++        previo = self.emotion.estado()
++        self.emotion._estado = PADState()  # impulso de este ciclo aislado
 +        self.emotion.actualizar(entradas, estado_interno, self.qualia)
++        if self._ciclos:
++            impulso, k = self.emotion.estado(), self.inercia_pad
++            self.emotion._estado = PADState(
++                placer=k * previo.placer + (1 - k) * impulso.placer,
++                activacion=k * previo.activacion + (1 - k) * impulso.activacion,
++                dominancia=k * previo.dominancia + (1 - k) * impulso.dominancia,
++            )
++        self._ciclos += 1
          estado_emocional: PADState = self.emotion.estado()
          self.self_model.update_state("emocion", estado_emocional)
          self._emit("after_emotion", {"emocion": estado_emocional})
-@@ -117,7 +150,7 @@ class SyntheticLoop:
+@@ -117,7 +168,7 @@ class SyntheticLoop:
  
          # 4. Control de acciones
          threshold = 0.6
@@ -367,7 +385,7 @@ index 23b00a6..4df6d78 100644
          if score >= threshold:
              datos_control = self.controller.ciclo_control(
                  entradas,
-@@ -129,8 +162,10 @@ class SyntheticLoop:
+@@ -129,8 +180,10 @@ class SyntheticLoop:
                      "advantages": [],
                  },
              )
@@ -379,7 +397,7 @@ index 23b00a6..4df6d78 100644
              )
              resumen_accion = {
                  "estado": self.controller.resumen_estado(),
-@@ -139,20 +174,25 @@ class SyntheticLoop:
+@@ -139,20 +192,25 @@ class SyntheticLoop:
              }
          else:
              resumen_accion = {"aborted": True, "reason": label}
@@ -409,7 +427,7 @@ index 23b00a6..4df6d78 100644
  
          self.self_model.update_state("last_reflection", texto_reflexion)
          self.self_model.update_state("emocion", estado_emocional_final)
-@@ -187,6 +227,7 @@ class SyntheticLoop:
+@@ -187,6 +245,7 @@ class SyntheticLoop:
              "etica": juicio_etico,
              "accion": resumen_accion,
              "reflexion": texto_reflexion,
