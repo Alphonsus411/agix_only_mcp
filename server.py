@@ -48,6 +48,9 @@ with contextlib.redirect_stdout(sys.stderr):
     from agix.qualia.ecoethics import EcoEthics
     from agix.metacognition.intention_evaluator import IntentionEvaluator
     from agix.metacognition.dynamic_evaluator import DynamicMetaEvaluator
+    from agix.metacognition.manager import MetacognitionManager
+    from agix.metacognition.decision_reviewer import DecisionReviewer
+    from agix.metacognition.metareflection_engine import MetaReflectionEngine
     from agix.goals.goal_engine import GoalEngine
     from agix.emotion.emotion_simulator import EmotionSimulator, PADState
     from agix.qualia.qualia_core import EmotionalState
@@ -76,6 +79,9 @@ Herramientas de AGIX (framework de Adolfo González) para apoyar el razonamiento
 - agix_memory_timeline / agix_memory_narrative: línea temporal y resumen narrativo de los episodios.
 - agix_narrative_*: autonarrativa persistente (experiencias con valores, metas y afectos), modelo de
   sí mismo y evaluación de si una acción encaja con esa identidad.
+- agix_decision_record / agix_decision_review / agix_metacognition_state: metacognición persistente;
+  registra decisiones con su resultado y lección, revisa aciertos/errores y detecta errores repetidos.
+- agix_resolve_internal_conflict: delibera entre hipótesis, reforzando las respaldadas por la memoria.
 - agix_ontology_*: grafo persistente de conceptos, atributos y relaciones.
 - agix_ethics_judge / agix_intention_evaluate / agix_meta_evaluate / agix_goal_register:
   evaluación ética e intencional; requieren que traduzcas el plan a puntuaciones 0..1.
@@ -937,20 +943,212 @@ def agix_intention_evaluate(
     return _plain(out)
 
 
+# --------------------------------------------------------------------------- metacognición persistente
+# Un único MetacognitionManager para todo el servidor: su registro de decisiones y los datos de
+# auto-organización se guardan en metacognicion.json (AGIX los mantiene solo en memoria) y sus
+# revisiones se escriben en la autonarrativa persistente en vez de en una base :memory:.
+METACOG_FILE = DATA_DIR / "metacognicion.json"
+with _quiet():
+    _metacog = MetacognitionManager(agent_name="Claude")
+_metacog.autonarrative.conn.close()
+_metacog.autonarrative = _narrative
+_meta.manager = _metacog  # agix_meta_evaluate comparte historial con agix_decision_*
+
+
+def _save_metacog() -> None:
+    so = _metacog.self_organization
+    data = {"decisions": _metacog.logic.registro_reflexivo, "active_modules": so.active_modules,
+            "dependencies": so.dependencies, "activation_times": so.activation_times,
+            "last_review": _metacog.self_model.state.get("decision_review")}
+    METACOG_FILE.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+
+
+def _load_metacog() -> None:
+    if not METACOG_FILE.exists():
+        return
+    data = json.loads(METACOG_FILE.read_text(encoding="utf-8"))
+    _metacog.logic.registro_reflexivo = list(data.get("decisions", []))
+    so = _metacog.self_organization
+    so.active_modules = list(data.get("active_modules", []))
+    so.dependencies = dict(data.get("dependencies", {}))
+    so.activation_times = list(data.get("activation_times", []))
+    _metacog.self_model.update_self_organization(so.compute_score())
+    if data.get("last_review"):
+        _metacog.self_model.update_state("decision_review", data["last_review"])
+
+
+try:
+    _load_metacog()
+except Exception as exc:
+    log.warning("No se pudo cargar la metacognición: %s", exc)
+
+
+def _stamp_last_decision() -> dict:
+    from datetime import datetime
+
+    event = _metacog.logic.registro_reflexivo[-1]
+    event.setdefault("timestamp", datetime.utcnow().isoformat())
+    return event
+
+
 @server.tool()
 def agix_meta_evaluate(context: dict, action: str, result: dict) -> dict:
-    """Metaevaluación lógica, afectiva y ética (DynamicMetaEvaluator) con historial de sesión.
+    """Metaevaluación lógica, afectiva y ética (DynamicMetaEvaluator).
 
     context: {"metas": [{"nombre","prioridad","incompatibles"}], "historial": [{"etica","motivacion"}]}
     result: {"exito": bool, "impacto": {"pro_vida","no_dano","respeto" | "beneficio","riesgo","cooperacion"}}
-    La coherencia acumula los éxitos de todas las acciones evaluadas en la sesión.
+    La acción queda en el registro persistente de decisiones: la coherencia es la de todo el historial
+    (compartido con agix_decision_record / agix_decision_review).
     """
     with _quiet():
         report = _meta.meta_evaluate(context, action, result)
         message = "No sé qué pensar de esta acción" if report["coherence"] is None else (
             "No me siento cómodo con esta acción." if report["coherence"] < 0.4 or report["ethics"] < 0.5
             else "Acción aceptada sin conflictos.")
+    _stamp_last_decision()
+    _save_metacog()
     return _plain({**report, "message": message})
+
+
+@server.tool()
+def agix_decision_record(
+    action: str,
+    success: bool,
+    lesson: str | None = None,
+    goal: str | None = None,
+    context: dict | None = None,
+    modules: list[str] | None = None,
+    dependencies: dict[str, list[str]] | None = None,
+) -> dict:
+    """Registra una decisión tomada y su resultado en la metacognición persistente.
+
+    action: qué se decidió; success: si salió bien; lesson: por qué salió así / qué aprender.
+    goal: meta a la que servía (permite medir el acierto por meta).
+    modules / dependencies: módulos o componentes implicados y sus dependencias; alimentan la
+        puntuación de auto-organización.
+    Devuelve la coherencia global (proporción de aciertos) y la auto-organización.
+    """
+    ctx = dict(context or {})
+    if goal:
+        ctx["goal"] = goal
+    if modules:
+        ctx["active_modules"] = list(modules)
+    if dependencies:
+        ctx["dependencies"] = {k: list(v) for k, v in dependencies.items()}
+    result: dict[str, Any] = {"exito": bool(success)}
+    if lesson:
+        result["leccion"] = lesson
+    with _quiet():
+        _metacog.observe_decision(ctx, action, result)
+        coherence = _metacog.self_assess()
+    event = _stamp_last_decision()
+    _save_metacog()
+    return _plain({"recorded": event, "coherence": coherence,
+                   "self_organization": _metacog.self_model.self_organization_score,
+                   "total_decisions": len(_metacog.logic.registro_reflexivo)})
+
+
+def _decision_rows(events: list[dict]) -> list[dict]:
+    return [{"action": e.get("accion"), "success": bool((e.get("resultado") or {}).get("exito")),
+             "lesson": (e.get("resultado") or {}).get("leccion"),
+             "goal": (e.get("contexto") or {}).get("goal"), "timestamp": e.get("timestamp")}
+            for e in events]
+
+
+def _group_rate(rows: list[dict], key: str) -> dict:
+    groups: dict[str, dict] = {}
+    for r in rows:
+        k = r.get(key)
+        if not k:
+            continue
+        g = groups.setdefault(k, {"successes": 0, "errors": 0})
+        g["successes" if r["success"] else "errors"] += 1
+    for g in groups.values():
+        g["success_rate"] = round(g["successes"] / (g["successes"] + g["errors"]), 3)
+    return groups
+
+
+@server.tool()
+def agix_decision_review(max_items: int = 20, store_in_narrative: bool = True) -> dict:
+    """Revisa las últimas decisiones (DecisionReviewer de AGIX) y extrae lecciones.
+
+    Además del análisis de AGIX (aciertos, errores, tono emocional, resumen), devuelve las lecciones
+    reales registradas, el acierto por acción y por meta, y las acciones que fallan repetidamente.
+    store_in_narrative: guarda el resumen de la revisión en la autonarrativa persistente.
+    """
+    if store_in_narrative:
+        with _quiet(), _narrative_lock:
+            analysis = _metacog.review_decisions(max_items)
+    else:
+        with _quiet():
+            analysis = DecisionReviewer(_metacog.logic, AutonarrativeCore()).review(max_items)
+        _metacog.self_model.update_state("decision_review", analysis)
+    rows = _decision_rows(_metacog.logic.registro_reflexivo[-max_items:] if max_items > 0
+                          else _metacog.logic.registro_reflexivo)
+    by_action = _group_rate(rows, "action")
+    _save_metacog()
+    return _plain({
+        **analysis,
+        "recorded_lessons": [r for r in rows if r["lesson"]],
+        "by_action": by_action,
+        "by_goal": _group_rate(rows, "goal"),
+        "repeated_errors": sorted(a for a, g in by_action.items() if g["errors"] >= 2),
+        "stored_in_narrative": store_in_narrative,
+    })
+
+
+@server.tool()
+def agix_metacognition_state(recent: int = 10) -> dict:
+    """Estado de la metacognición: coherencia, auto-organización (y sus componentes), proto-agencia,
+    acierto por meta, decisiones recientes y la última revisión."""
+    so = _metacog.self_organization
+    with _quiet():
+        coherence = _metacog.self_assess()
+    rows = _decision_rows(_metacog.logic.registro_reflexivo)
+    return _plain({
+        "total_decisions": len(rows),
+        "coherence": coherence,
+        "self_organization": {"score": _metacog.self_model.self_organization_score,
+                              "module_complexity": so.module_complexity(),
+                              "interdependency": so.interdependency_complexity(),
+                              "temporal_coherence": so.temporal_coherence(),
+                              "active_modules": sorted(set(so.active_modules))},
+        "proto_agency": _metacog.proto_agency,
+        "by_goal": _group_rate(rows, "goal"),
+        "recent": rows[-recent:],
+        "last_review": _metacog.self_model.state.get("decision_review"),
+    })
+
+
+@server.tool()
+def agix_resolve_internal_conflict(
+    hypotheses: list[dict],
+    threshold: float = 0.5,
+    max_iterations: int = 10,
+) -> dict:
+    """Resuelve un conflicto entre voces internas (MetaReflectionEngine de AGIX).
+
+    hypotheses: [{"text": str, "weight": 0..1, "memory": str opcional}, ...]
+    Cada iteración puntúa cada voz como peso + tono PAD (+0.1 si su "memory" aparece en el resumen
+    narrativo de la memoria episódica) y se detiene cuando la mejor supera a la segunda en
+    'threshold'. Las voces respaldadas por la memoria ganan fuerza en cada iteración.
+    """
+    if len(hypotheses) < 2:
+        raise ValueError("Se necesitan al menos dos hipótesis")
+    engine = MetaReflectionEngine()
+    engine.memory = _memory.tree  # el respaldo de memoria se busca en la narrativa episódica real
+    voices = [engine.add_voice(h["text"], float(h.get("weight", 0.5)), h.get("memory")) for h in hypotheses]
+    with _quiet():
+        winner = engine.resolve_conflict(voices, threshold=threshold, max_iterations=max_iterations)
+    narrative = _memory.retrieve()
+    return _plain({
+        "winner": winner.hipotesis,
+        "scores": {v.hipotesis: v.score for v in voices},
+        "memory_backed": [v.hipotesis for v in voices if v.memoria_asociada and v.memoria_asociada in narrative],
+        "iterations": len(engine.conflict_history),
+        "resolved": engine.conflict_history[-1]["difference"] > threshold,
+        "history": engine.conflict_history,
+    })
 
 
 @server.tool()

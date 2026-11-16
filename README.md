@@ -13,7 +13,7 @@ claude mcp add --scope user agix -e PYTHONIOENCODING=utf-8 -- "%CD%\.venv\Script
 Datos persistentes en `%USERPROFILE%\.agix-mcp` (cambiable con `AGIX_MCP_DATA`):
 `memoria.json` (experiencias), `ontologia.json` (conceptos), `qualia_config.json`,
 `qualia_estado.json` + `qualia_modelos.json` (espíritu Qualia y sus pesos aprendidos), `suenos.json`
-y `autonarrativa.db` + `autonarrativa_scores.json`.
+`autonarrativa.db` + `autonarrativa_scores.json` y `metacognicion.json`.
 
 ## Herramientas
 
@@ -31,7 +31,11 @@ y `autonarrativa.db` + `autonarrativa_scores.json`.
 | `agix_ontology_add/query` | `memory.symbolic.Ontology` | Grafo persistente, cierre transitivo de relaciones y herencia de atributos |
 | `agix_ethics_judge` | `AlignmentInterface` + marcos | Eco, utilitarista, deontológico, virtudes |
 | `agix_intention_evaluate` | `IntentionEvaluator` | Consecuencias, conflicto de metas, conducta |
-| `agix_meta_evaluate` | `DynamicMetaEvaluator` | Coherencia, ética, tono afectivo (estado de sesión) |
+| `agix_meta_evaluate` | `DynamicMetaEvaluator` | Coherencia, ética, tono afectivo (historial persistente compartido) |
+| `agix_decision_record` | `MetacognitionManager` | Decisión + resultado + lección + meta + módulos implicados |
+| `agix_decision_review` | `DecisionReviewer` | Aciertos/errores, lecciones reales, acierto por acción y meta, errores repetidos; se guarda en la autonarrativa |
+| `agix_metacognition_state` | `MetacognitionManager` + `SelfOrganizationMonitor` | Coherencia, auto-organización y componentes, proto-agencia |
+| `agix_resolve_internal_conflict` | `MetaReflectionEngine` | Deliberación entre hipótesis reforzando las respaldadas por la memoria episódica |
 | `agix_goal_register` | `GoalEngine` | Metas con filtro ético (< 0.6 se rechaza) |
 | `agix_emotion_update` | `EmotionSimulator` | Estado PAD puntual |
 | `agix_qualia_experience/state` | `QualiaSpirit` | Espíritu persistente: emociones, modo, predicción RNN, asociaciones hebbianas, diario, introspección |
@@ -73,5 +77,8 @@ Tests: `.venv\Scripts\python -m pytest tests -q`.
   desde la base de datos al arrancar. Su embedding son frecuencias de letras ASCII (ignora ñ y tildes) y
   `query_experiences` devuelve todo sin puntuación; el MCP añade coincidencia de palabras y top-k.
   La conexión se abre en el hilo de importación; el MCP la reabre con `check_same_thread=False` y un lock.
+- `MetacognitionManager` guarda sus decisiones (`ReflexiveLogic`) y la auto-organización solo en
+  memoria, y su `AutonarrativeCore` es `:memory:`; el MCP persiste ambos y conecta la autonarrativa real.
+  `DecisionReviewer` genera lecciones genéricas ("Mejorar acción 'X'"); el MCP conserva la lección real.
 - `NarrativeMemoryTree` no se persiste y descarta episodios intermedios al llenarse (K=2, D=3 conserva
   los primeros y los últimos); el MCP lo reconstruye reinsertando los episodios en orden.
