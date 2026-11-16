@@ -1,6 +1,7 @@
 name: MCP regression tests
 
 on:
+  workflow_dispatch:
   push:
     branches: [fix/mcp-hardening]
   pull_request:
