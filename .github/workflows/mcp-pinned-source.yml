@@ -1,0 +1,43 @@
+name: MCP against pinned private AGIX Core
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pinned-source-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require read-only access to private AGIX Core
+        env:
+          AGIX_CORE_READ_TOKEN: ${{ secrets.AGIX_CORE_READ_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "$AGIX_CORE_READ_TOKEN" ]; then
+            echo "::error::Configure AGIX_CORE_READ_TOKEN with read-only Contents permission for Alphonsus411/agi_core"
+            exit 1
+          fi
+      - name: Checkout validated AGIX Core commit
+        uses: actions/checkout@v4
+        with:
+          repository: Alphonsus411/agi_core
+          ref: c3a89afb84c3d86e27815329164f5ac87b009eff
+          token: ${{ secrets.AGIX_CORE_READ_TOKEN }}
+          path: agix-core
+          persist-credentials: false
+      - name: Install MCP dependencies then replace AGIX with pinned source
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+          python -m pip install --no-deps --force-reinstall ./agix-core
+          python -m pip show agix
+      - name: Verify pinned AGIX contract and MCP regression suite
+        run: python -m pytest tests -q
