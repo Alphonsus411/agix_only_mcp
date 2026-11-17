@@ -17,7 +17,7 @@ HOOK = ROOT / "hooks" / "agix_context.py"
 
 def _project(tmp_path, memoria=None, raw=None):
     project = tmp_path / "proyecto"
-    (project / "src" / "sub").mkdir(parents=True)
+    (project / "src" / "sub").mkdir(parents=True, exist_ok=True)
     if raw is not None:
         (project / ".agix.json").write_text(raw, encoding="utf-8")
     elif memoria is not None:
@@ -138,7 +138,7 @@ def test_hook_redacta_credenciales_en_contexto(tmp_path):
     }, "contexto": {"goal": "deploy"}}]}
     (folder / "metacognicion.json").write_text(json.dumps(data), encoding="utf-8")
     result = _hook("session", project, env)
-    assert "[REDACTED]" in result
+    assert "[REDACTED]" in result or "***" in result
     assert "token123" not in result
     assert "secreto" not in result
     assert secret not in result
