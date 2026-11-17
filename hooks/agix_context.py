@@ -257,10 +257,10 @@ def prompt_context(prompt: str, top: int = 3, min_matches: int = 2) -> str:
 # Redacción defensiva de credenciales comunes antes de inyectar recuerdos en Claude.
 # No sustituye un DLP completo ni elimina datos sensibles ya guardados.
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)\\b(authorization\\s*:\\s*bearer\\s+)\\S+"),
-    re.compile(r"(?i)\\b((?:api[_-]?key|access[_-]?token|secret|password|passwd)\\s*[:=]\\s*)[^\\s,;]+"),
-    re.compile(r"\\bgh[pousr]_[A-Za-z0-9_]{20,}\\b"),
-    re.compile(r"\\bgithub_pat_[A-Za-z0-9_]{20,}\\b"),
+    re.compile(r"(?i)\b(authorization\s*:\s*bearer\s+)\S+"),
+    re.compile(r"(?i)\b((?:api[_-]?key|access[_-]?token|secret|password|passwd)\s*[:=]\s*)[^\s,;]+"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
 )
 
 
