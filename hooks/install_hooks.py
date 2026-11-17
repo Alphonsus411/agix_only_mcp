@@ -25,6 +25,10 @@ def agix_hooks() -> dict:
     python = (REPO / ".venv" / "Scripts" / "python.exe")
     if not python.exists():  # Linux / macOS
         python = REPO / ".venv" / "bin" / "python"
+    if not python.is_file():
+        # In CI and editable installs there may be no repository-local venv.
+        # Use the interpreter running the installer rather than a missing executable.
+        python = Path(sys.executable)
     script = REPO / "hooks" / "agix_context.py"
 
     def entry(mode: str) -> dict:
