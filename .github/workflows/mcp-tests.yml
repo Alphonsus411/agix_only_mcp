@@ -52,8 +52,19 @@ jobs:
           for relative in ("qualia/neuro_plastic.py", "qualia/spirit.py"):
               data = (package_dir / relative).read_bytes()
               print(f"AGIX {relative}: sha256={hashlib.sha256(data).hexdigest()} bytes={len(data)}")
-          subprocess.run(cmd, cwd=site_packages, check=True)
-          subprocess.run(["git", "apply", "-p2", str(patch)], cwd=site_packages, check=True)
+          # git apply interpreta los finales de línea del parche de manera
+          # distinta en los runners. Normalizamos a LF en una copia temporal.
+          import tempfile
+          patch_bytes = patch.read_bytes().replace(b"\r\n", b"\n")
+          with tempfile.TemporaryDirectory() as tmp:
+              normalized_patch = pathlib.Path(tmp) / "qualia-fixes.patch"
+              normalized_patch.write_bytes(patch_bytes)
+              subprocess.run(["git", "apply", "-p2", "--check",
+                              "--ignore-space-change", str(normalized_patch)],
+                             cwd=site_packages, check=True)
+              subprocess.run(["git", "apply", "-p2",
+                              "--ignore-space-change", str(normalized_patch)],
+                             cwd=site_packages, check=True)
           print(f"AGIX CI patch applied to {package_dir}")
           PY
       - name: Verify AGIX dependency contract
