@@ -30,6 +30,7 @@ jobs:
           if [ -z "$AGIX_CORE_READ_TOKEN" ]; then
             echo "::notice::Pinned source test skipped: configure AGIX_CORE_READ_TOKEN with read-only Contents permission for Alphonsus411/agi_core"
             echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️ NOT TESTED: AGIX Core private source integration was skipped (missing read-only token)." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "available=true" >> "$GITHUB_OUTPUT"
           fi
@@ -54,4 +55,7 @@ jobs:
           python -m pip show agix
       - name: Verify pinned AGIX contract and MCP regression suite
         if: steps.access.outputs.available == 'true'
-        run: python -m pytest tests -q
+        shell: bash
+        run: |
+          python -m pytest tests -q
+          echo "✅ VERIFIED: MCP tests passed against pinned AGIX Core c3a89afb84c3d86e27815329164f5ac87b009eff." >> "$GITHUB_STEP_SUMMARY"
