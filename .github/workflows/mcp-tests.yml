@@ -48,6 +48,10 @@ jobs:
           patch = pathlib.Path("patches/qualia-fixes.patch").resolve()
           # El parche usa rutas a/src/agix/...; -p2 las convierte en agix/...
           cmd = ["git", "apply", "-p2", "--check", str(patch)]
+          import hashlib
+          for relative in ("qualia/neuro_plastic.py", "qualia/spirit.py"):
+              data = (package_dir / relative).read_bytes()
+              print(f"AGIX {relative}: sha256={hashlib.sha256(data).hexdigest()} bytes={len(data)}")
           subprocess.run(cmd, cwd=site_packages, check=True)
           subprocess.run(["git", "apply", "-p2", str(patch)], cwd=site_packages, check=True)
           print(f"AGIX CI patch applied to {package_dir}")
