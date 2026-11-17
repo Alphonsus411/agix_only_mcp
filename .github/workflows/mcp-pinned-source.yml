@@ -7,35 +7,41 @@ on:
     paths:
       - '.github/workflows/mcp-pinned-source.yml'
       - 'requirements.txt'
-      - 'tests/test_dependency_contract.py'
+      - 'tests/**'
+  pull_request:
+    paths:
+      - '.github/workflows/mcp-pinned-source.yml'
+      - 'requirements.txt'
+      - 'tests/**'
 
 permissions:
   contents: read
 
 jobs:
   pinned-source-contract:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.11', '3.12']
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - name: Detect read-only access to private AGIX Core
-        id: access
+          python-version: ${{ matrix.python-version }}
+      - name: Require read-only access to private AGIX Core
+        shell: bash
         env:
           AGIX_CORE_READ_TOKEN: ${{ secrets.AGIX_CORE_READ_TOKEN }}
-        shell: bash
         run: |
           if [ -z "$AGIX_CORE_READ_TOKEN" ]; then
-            echo "::notice::Pinned source test skipped: configure AGIX_CORE_READ_TOKEN with read-only Contents permission for Alphonsus411/agi_core"
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "⚠️ NOT TESTED: AGIX Core private source integration was skipped (missing read-only token)." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "::error::NOT TESTED: AGIX_CORE_READ_TOKEN is required for pinned-source CI"
+            echo "❌ NOT TESTED: missing private AGIX Core read token." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
       - name: Checkout validated AGIX Core commit
-        if: steps.access.outputs.available == 'true'
         uses: actions/checkout@v4
         with:
           repository: Alphonsus411/agi_core
@@ -43,19 +49,21 @@ jobs:
           token: ${{ secrets.AGIX_CORE_READ_TOKEN }}
           path: agix-core
           persist-credentials: false
-      - name: Install MCP dependencies then replace AGIX with pinned source
-        if: steps.access.outputs.available == 'true'
+      - name: Install pinned AGIX Core from source
         shell: bash
         run: |
+          set -e
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pytest
           test "$(git -C agix-core rev-parse HEAD)" = "c3a89afb84c3d86e27815329164f5ac87b009eff"
           python -m pip install --no-deps --force-reinstall ./agix-core
           python -m pip check
           python -m pip show agix
-      - name: Verify pinned AGIX contract and MCP regression suite
-        if: steps.access.outputs.available == 'true'
+      - name: Verify AGIX dependency contract
+        run: python -m pytest tests/test_dependency_contract.py -q
+      - name: Run complete MCP regression suite
+        run: python -m pytest tests -q
+      - name: Record successful pinned-source verification
         shell: bash
         run: |
-          python -m pytest tests -q
-          echo "✅ VERIFIED: MCP tests passed against pinned AGIX Core c3a89afb84c3d86e27815329164f5ac87b009eff." >> "$GITHUB_STEP_SUMMARY"
+          echo "✅ VERIFIED: ${{ matrix.os }} Python ${{ matrix.python-version }} with AGIX Core c3a89afb84c3d86e27815329164f5ac87b009eff (contract and full MCP suite passed)." >> "$GITHUB_STEP_SUMMARY"
