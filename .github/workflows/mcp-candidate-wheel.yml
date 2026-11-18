@@ -1,0 +1,87 @@
+name: MCP against AGIX 1.11.1 candidate wheel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/mcp-hardening]
+    paths:
+      - '.github/workflows/mcp-candidate-wheel.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  candidate-wheel-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.11', '3.12']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Require read-only AGIX Core access
+        shell: bash
+        env:
+          AGIX_CORE_READ_TOKEN: ${{ secrets.AGIX_CORE_READ_TOKEN }}
+        run: |
+          if [ -z "$AGIX_CORE_READ_TOKEN" ]; then
+            echo "::error::NOT TESTED: missing AGIX_CORE_READ_TOKEN"
+            exit 1
+          fi
+      - name: Checkout AGIX candidate
+        uses: actions/checkout@v4
+        with:
+          repository: Alphonsus411/agi_core
+          ref: c86c5e2d89e5c73e3198314efd5f5a96ee3230c9
+          path: agix-core
+          token: ${{ secrets.AGIX_CORE_READ_TOKEN }}
+          persist-credentials: false
+      - name: Build candidate wheel and validate metadata
+        shell: bash
+        run: |
+          set -e
+          test "$(git -C agix-core rev-parse HEAD)" = "c86c5e2d89e5c73e3198314efd5f5a96ee3230c9"
+          python -m pip install --upgrade pip
+          python -m pip install build twine pytest
+          python -m build --wheel --outdir candidate-dist ./agix-core
+          python -m twine check candidate-dist/*.whl
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          wheels = list(Path("candidate-dist").glob("agix-1.11.1-*.whl"))
+          assert len(wheels) == 1, wheels
+          with ZipFile(wheels[0]) as archive:
+              metadata_files = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
+              assert len(metadata_files) == 1
+              metadata = archive.read(metadata_files[0]).decode()
+              assert "Version: 1.11.1\n" in metadata
+              assert "Provides-Extra: fuzzy" in metadata
+              assert "Provides-Extra: game-theory" in metadata or "Provides-Extra: game_theory" in metadata
+          PY
+      - name: Install MCP dependencies and candidate wheel
+        shell: bash
+        run: |
+          set -e
+          python -m pip install -r requirements.txt
+          python - <<'PY'
+          import subprocess, sys
+          from pathlib import Path
+          wheel = next(Path("candidate-dist").glob("agix-1.11.1-*.whl"))
+          subprocess.run([sys.executable, "-m", "pip", "install", "--force-reinstall", str(wheel) + "[fuzzy,game_theory]"], check=True)
+          subprocess.run([sys.executable, "-m", "pip", "check"], check=True)
+          from importlib.metadata import version
+          import agix
+          assert version("agix") == "1.11.1"
+          assert agix.__version__ == "1.11.1"
+          PY
+      - name: Verify MCP contract and full regression suite
+        shell: bash
+        run: |
+          python -m pytest tests/test_dependency_contract.py -q
+          python -m pytest tests -q
+          echo "✅ Candidate AGIX 1.11.1 wheel + MCP suite passed on ${{ matrix.os }} / Python ${{ matrix.python-version }}." >> "$GITHUB_STEP_SUMMARY"
