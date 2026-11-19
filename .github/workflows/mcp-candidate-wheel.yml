@@ -69,12 +69,26 @@ jobs:
         shell: bash
         run: |
           set -e
-          python -m pip install -r requirements.txt
+          # The regular MCP requirements pin AGIX 1.11.0. This isolated
+          # candidate test installs the wheel instead of that pin.
+          python - <<'PY'
+          import pathlib
+          import subprocess
+          import sys
+          requirements = pathlib.Path("requirements.txt").read_text(encoding="utf-8").splitlines()
+          mcp_requirements = [line for line in requirements
+                              if line.strip() and not line.lstrip().startswith("#")
+                              and not line.strip().lower().startswith("agix[")
+                              and not line.strip().lower().startswith("agix==")]
+          assert len(mcp_requirements) == len([line for line in requirements if line.strip() and not line.lstrip().startswith("#")]) - 1, "Expected exactly one AGIX pin"
+          assert mcp_requirements, "Expected MCP requirements"
+          subprocess.run([sys.executable, "-m", "pip", "install", *mcp_requirements], check=True)
+          PY
           python - <<'PY'
           import subprocess, sys
           from pathlib import Path
           wheel = next(Path("candidate-dist").glob("agix-1.11.1-*.whl"))
-          subprocess.run([sys.executable, "-m", "pip", "install", "--force-reinstall", str(wheel) + "[fuzzy,game_theory]"], check=True)
+          subprocess.run([sys.executable, "-m", "pip", "install", str(wheel) + "[fuzzy,game_theory]"], check=True)
           subprocess.run([sys.executable, "-m", "pip", "check"], check=True)
           from importlib.metadata import version
           import agix
