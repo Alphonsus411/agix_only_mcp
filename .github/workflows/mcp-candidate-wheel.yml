@@ -42,6 +42,7 @@ jobs:
           token: ${{ secrets.AGIX_CORE_READ_TOKEN }}
           persist-credentials: false
       - name: Build candidate wheel and validate metadata
+        id: build
         shell: bash
         run: |
           set -e
@@ -64,6 +65,7 @@ jobs:
               assert "Provides-Extra: game-theory" in metadata or "Provides-Extra: game_theory" in metadata
           PY
       - name: Install MCP dependencies and candidate wheel
+        id: install
         shell: bash
         run: |
           set -e
@@ -80,8 +82,61 @@ jobs:
           assert agix.__version__ == "1.11.1"
           PY
       - name: Verify MCP contract and full regression suite
+        id: tests
         shell: bash
         run: |
           python -m pytest tests/test_dependency_contract.py -q
           python -m pytest tests -q
           echo "✅ Candidate AGIX 1.11.1 wheel + MCP suite passed on ${{ matrix.os }} / Python ${{ matrix.python-version }}." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect safe diagnostic report
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p ci-diagnostics
+          python - <<'PY'
+          import importlib.metadata
+          import pathlib
+          import platform
+          import subprocess
+          import sys
+
+          out = pathlib.Path("ci-diagnostics/report.txt")
+          lines = [
+              f"OS: {platform.platform()}",
+              f"Python: {sys.version}",
+              f"Interpreter: {sys.executable}",
+          ]
+          for package in ("agix", "mcp", "pytest", "numpy", "scipy"):
+              try:
+                  lines.append(f"{package}: {importlib.metadata.version(package)}")
+              except importlib.metadata.PackageNotFoundError:
+                  lines.append(f"{package}: NOT INSTALLED")
+          wheels = sorted(pathlib.Path("candidate-dist").glob("*.whl"))
+          lines.append("Candidate wheels: " + ", ".join(w.name for w in wheels))
+          result = subprocess.run(
+              [sys.executable, "-m", "pip", "check"],
+              capture_output=True, text=True, timeout=90,
+          )
+          lines.append(f"pip check exit code: {result.returncode}")
+          lines.append("pip check output:\n" + (result.stdout + result.stderr)[:12000])
+          out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          print(out.read_text(encoding="utf-8"))
+          PY
+      - name: Upload diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agix-wheel-diagnostics-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: ci-diagnostics/report.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Summarize candidate validation
+        if: always()
+        shell: bash
+        run: |
+          echo "### Candidate wheel validation — ${{ matrix.os }} / Python ${{ matrix.python-version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Wheel build: ${{ steps.build.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Installation: ${{ steps.install.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- MCP tests: ${{ steps.tests.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Diagnostic artifact: agix-wheel-diagnostics-${{ matrix.os }}-py${{ matrix.python-version }}" >> "$GITHUB_STEP_SUMMARY"
