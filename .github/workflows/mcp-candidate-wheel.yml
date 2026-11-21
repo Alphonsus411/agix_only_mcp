@@ -37,7 +37,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Alphonsus411/agi_core
-          ref: c86c5e2d89e5c73e3198314efd5f5a96ee3230c9
+          ref: abcc8af6ea3371269f9e8d5431a0c11bd05dcb58
           path: agix-core
           token: ${{ secrets.AGIX_CORE_READ_TOKEN }}
           persist-credentials: false
@@ -46,12 +46,13 @@ jobs:
         shell: bash
         run: |
           set -e
-          test "$(git -C agix-core rev-parse HEAD)" = "c86c5e2d89e5c73e3198314efd5f5a96ee3230c9"
+          test "$(git -C agix-core rev-parse HEAD)" = "abcc8af6ea3371269f9e8d5431a0c11bd05dcb58"
           python -m pip install --upgrade pip
           python -m pip install build twine pytest
           python -m build --wheel --outdir candidate-dist ./agix-core
           python -m twine check candidate-dist/*.whl
           python - <<'PY'
+          from email import message_from_bytes
           from pathlib import Path
           from zipfile import ZipFile
           wheels = list(Path("candidate-dist").glob("agix-1.11.1-*.whl"))
@@ -59,10 +60,12 @@ jobs:
           with ZipFile(wheels[0]) as archive:
               metadata_files = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
               assert len(metadata_files) == 1
-              metadata = archive.read(metadata_files[0]).decode()
-              assert "Version: 1.11.1\n" in metadata
-              assert "Provides-Extra: fuzzy" in metadata
-              assert "Provides-Extra: game-theory" in metadata or "Provides-Extra: game_theory" in metadata
+              metadata = message_from_bytes(archive.read(metadata_files[0]))
+              assert metadata.get_all("Name") == ["agix"]
+              assert metadata.get_all("Version") == ["1.11.1"]
+              extras = {extra.lower().replace("_", "-") for extra in metadata.get_all("Provides-Extra", [])}
+              assert "fuzzy" in extras
+              assert "game-theory" in extras
           PY
       - name: Install MCP dependencies and candidate wheel
         id: install
@@ -100,7 +103,14 @@ jobs:
         shell: bash
         run: |
           python -m pytest tests/test_dependency_contract.py -q
-          python -m pytest tests -q
+          python -m pytest tests -q --junitxml=ci-diagnostics/mcp-tests.xml
+          python - <<'PY'
+          from xml.etree import ElementTree
+
+          cases = ElementTree.parse("ci-diagnostics/mcp-tests.xml").findall(".//testcase")
+          passed = sum(not any(case.find(tag) is not None for tag in ("failure", "error", "skipped")) for case in cases)
+          assert len(cases) == passed == 181, f"Expected 181 passed tests, got {passed}/{len(cases)}"
+          PY
           echo "✅ Candidate AGIX 1.11.1 wheel + MCP suite passed on ${{ matrix.os }} / Python ${{ matrix.python-version }}." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Collect safe diagnostic report
@@ -109,6 +119,7 @@ jobs:
         run: |
           mkdir -p ci-diagnostics
           python - <<'PY'
+          from hashlib import file_digest
           import importlib.metadata
           import pathlib
           import platform
@@ -128,6 +139,14 @@ jobs:
                   lines.append(f"{package}: NOT INSTALLED")
           wheels = sorted(pathlib.Path("candidate-dist").glob("*.whl"))
           lines.append("Candidate wheels: " + ", ".join(w.name for w in wheels))
+          core = subprocess.run(
+              ["git", "-C", "agix-core", "rev-parse", "HEAD"],
+              capture_output=True, text=True, timeout=30,
+          )
+          lines.append(f"Core commit: {core.stdout.strip() or 'UNAVAILABLE'}")
+          for wheel in wheels:
+              with wheel.open("rb") as stream:
+                  lines.append(f"SHA-256 {wheel.name}: {file_digest(stream, 'sha256').hexdigest()}")
           result = subprocess.run(
               [sys.executable, "-m", "pip", "check"],
               capture_output=True, text=True, timeout=90,
@@ -142,7 +161,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: agix-wheel-diagnostics-${{ matrix.os }}-py${{ matrix.python-version }}
-          path: ci-diagnostics/report.txt
+          path: ci-diagnostics/
           if-no-files-found: error
           retention-days: 14
       - name: Summarize candidate validation
