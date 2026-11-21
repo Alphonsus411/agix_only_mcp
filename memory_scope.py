@@ -73,6 +73,9 @@ def resolve(start: str | Path | None = None, env: dict | None = None) -> Scope:
     start = Path(start or env.get("CLAUDE_PROJECT_DIR") or os.getcwd())
     marker = find_marker(start)
     if marker is None:
+        if env.get("AGIX_MCP_REQUIRE_SCOPE", "").strip().lower() in ("1", "true", "yes", "on"):
+            return Scope("off", None, "AGIX_MCP_REQUIRE_SCOPE", None,
+                         "sin .agix.json: memoria desactivada por política de aislamiento")
         return Scope("global", base, "sin .agix.json: memoria global")
 
     def off(problem: str | None) -> Scope:

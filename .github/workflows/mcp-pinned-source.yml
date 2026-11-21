@@ -1,0 +1,69 @@
+name: MCP against pinned private AGIX Core
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/mcp-hardening]
+    paths:
+      - '.github/workflows/mcp-pinned-source.yml'
+      - 'requirements.txt'
+      - 'tests/**'
+  pull_request:
+    paths:
+      - '.github/workflows/mcp-pinned-source.yml'
+      - 'requirements.txt'
+      - 'tests/**'
+
+permissions:
+  contents: read
+
+jobs:
+  pinned-source-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.11', '3.12']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Require read-only access to private AGIX Core
+        shell: bash
+        env:
+          AGIX_CORE_READ_TOKEN: ${{ secrets.AGIX_CORE_READ_TOKEN }}
+        run: |
+          if [ -z "$AGIX_CORE_READ_TOKEN" ]; then
+            echo "::error::NOT TESTED: AGIX_CORE_READ_TOKEN is required for pinned-source CI"
+            echo "❌ NOT TESTED: missing private AGIX Core read token." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: Checkout validated AGIX Core commit
+        uses: actions/checkout@v4
+        with:
+          repository: Alphonsus411/agi_core
+          ref: c3a89afb84c3d86e27815329164f5ac87b009eff
+          token: ${{ secrets.AGIX_CORE_READ_TOKEN }}
+          path: agix-core
+          persist-credentials: false
+      - name: Install pinned AGIX Core from source
+        shell: bash
+        run: |
+          set -e
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+          test "$(git -C agix-core rev-parse HEAD)" = "c3a89afb84c3d86e27815329164f5ac87b009eff"
+          python -m pip install --no-deps --force-reinstall ./agix-core
+          python -m pip check
+          python -m pip show agix
+      - name: Verify AGIX dependency contract
+        run: python -m pytest tests/test_dependency_contract.py -q
+      - name: Run complete MCP regression suite
+        run: python -m pytest tests -q
+      - name: Record successful pinned-source verification
+        shell: bash
+        run: |
+          echo "✅ VERIFIED: ${{ matrix.os }} Python ${{ matrix.python-version }} with AGIX Core c3a89afb84c3d86e27815329164f5ac87b009eff (contract and full MCP suite passed)." >> "$GITHUB_STEP_SUMMARY"

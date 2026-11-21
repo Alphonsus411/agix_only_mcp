@@ -17,7 +17,7 @@ HOOK = ROOT / "hooks" / "agix_context.py"
 
 def _project(tmp_path, memoria=None, raw=None):
     project = tmp_path / "proyecto"
-    (project / "src" / "sub").mkdir(parents=True)
+    (project / "src" / "sub").mkdir(parents=True, exist_ok=True)
     if raw is not None:
         (project / ".agix.json").write_text(raw, encoding="utf-8")
     elif memoria is not None:
@@ -35,6 +35,27 @@ def _env(tmp_path, **extra):
 def test_sin_marcador_usa_la_global(tmp_path):
     scope = memory_scope.resolve(_project(tmp_path), _env(tmp_path))
     assert scope.name == "global" and scope.data_dir == tmp_path / "home"
+
+
+def test_modo_estricto_sin_marcador_desactiva_memoria(tmp_path):
+    env = _env(tmp_path, AGIX_MCP_REQUIRE_SCOPE="1")
+    scope = memory_scope.resolve(_project(tmp_path), env)
+    assert not scope.enabled
+    assert scope.name == "off"
+    assert scope.source == "AGIX_MCP_REQUIRE_SCOPE"
+
+
+def test_modo_estricto_respeta_proyecto_explicito(tmp_path):
+    env = _env(tmp_path, AGIX_MCP_REQUIRE_SCOPE="true")
+    scope = memory_scope.resolve(_project(tmp_path, "cliente-x"), env)
+    assert scope.enabled
+    assert scope.name == "cliente-x"
+
+
+def test_modo_estricto_respeta_off_y_global_explicitos(tmp_path):
+    env = _env(tmp_path, AGIX_MCP_REQUIRE_SCOPE="yes")
+    assert not memory_scope.resolve(_project(tmp_path, "off"), env).enabled
+    assert memory_scope.resolve(_project(tmp_path, "global"), env).name == "global"
 
 
 def test_marcador_con_nombre_desde_una_subcarpeta(tmp_path):
@@ -104,6 +125,23 @@ def test_hook_lee_solo_la_memoria_del_proyecto(tmp_path):
     other = tmp_path / "otro"
     other.mkdir()
     assert "secreto global" in _hook("session", other, env)
+
+
+def test_hook_redacta_credenciales_en_contexto(tmp_path):
+    env = _env(tmp_path)
+    project = _project(tmp_path, "cliente-x")
+    folder = tmp_path / "home" / "proyectos" / "cliente-x"
+    folder.mkdir(parents=True)
+    secret = "ghp_" + "a" * 36
+    data = {"decisions": [{"accion": "deploy", "resultado": {
+        "exito": False, "leccion": "Authorization: Bearer token123 password=secreto " + secret
+    }, "contexto": {"goal": "deploy"}}]}
+    (folder / "metacognicion.json").write_text(json.dumps(data), encoding="utf-8")
+    result = _hook("session", project, env)
+    assert "[REDACTED]" in result or "***" in result
+    assert "token123" not in result
+    assert "secreto" not in result
+    assert secret not in result
 
 
 def test_hook_con_memoria_desactivada_no_lee_nada(tmp_path):

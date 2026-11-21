@@ -1,0 +1,175 @@
+name: MCP against AGIX 1.11.1 candidate wheel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/mcp-hardening]
+    paths:
+      - '.github/workflows/mcp-candidate-wheel.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  candidate-wheel-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.11', '3.12']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Require read-only AGIX Core access
+        shell: bash
+        env:
+          AGIX_CORE_READ_TOKEN: ${{ secrets.AGIX_CORE_READ_TOKEN }}
+        run: |
+          if [ -z "$AGIX_CORE_READ_TOKEN" ]; then
+            echo "::error::NOT TESTED: missing AGIX_CORE_READ_TOKEN"
+            exit 1
+          fi
+      - name: Checkout AGIX candidate
+        uses: actions/checkout@v4
+        with:
+          repository: Alphonsus411/agi_core
+          ref: abcc8af6ea3371269f9e8d5431a0c11bd05dcb58
+          path: agix-core
+          token: ${{ secrets.AGIX_CORE_READ_TOKEN }}
+          persist-credentials: false
+      - name: Build candidate wheel and validate metadata
+        id: build
+        shell: bash
+        run: |
+          set -e
+          test "$(git -C agix-core rev-parse HEAD)" = "abcc8af6ea3371269f9e8d5431a0c11bd05dcb58"
+          python -m pip install --upgrade pip
+          python -m pip install build twine pytest
+          python -m build --wheel --outdir candidate-dist ./agix-core
+          python -m twine check candidate-dist/*.whl
+          python - <<'PY'
+          from email import message_from_bytes
+          from pathlib import Path
+          from zipfile import ZipFile
+          wheels = list(Path("candidate-dist").glob("agix-1.11.1-*.whl"))
+          assert len(wheels) == 1, wheels
+          with ZipFile(wheels[0]) as archive:
+              metadata_files = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
+              assert len(metadata_files) == 1
+              metadata = message_from_bytes(archive.read(metadata_files[0]))
+              assert metadata.get_all("Name") == ["agix"]
+              assert metadata.get_all("Version") == ["1.11.1"]
+              extras = {extra.lower().replace("_", "-") for extra in metadata.get_all("Provides-Extra", [])}
+              assert "fuzzy" in extras
+              assert "game-theory" in extras
+          PY
+      - name: Install MCP dependencies and candidate wheel
+        id: install
+        shell: bash
+        run: |
+          set -e
+          # The regular MCP requirements pin AGIX 1.11.0. This isolated
+          # candidate test installs the wheel instead of that pin.
+          python - <<'PY'
+          import pathlib
+          import subprocess
+          import sys
+          requirements = pathlib.Path("requirements.txt").read_text(encoding="utf-8").splitlines()
+          mcp_requirements = [line for line in requirements
+                              if line.strip() and not line.lstrip().startswith("#")
+                              and not line.strip().lower().startswith("agix[")
+                              and not line.strip().lower().startswith("agix==")]
+          assert len(mcp_requirements) == len([line for line in requirements if line.strip() and not line.lstrip().startswith("#")]) - 1, "Expected exactly one AGIX pin"
+          assert mcp_requirements, "Expected MCP requirements"
+          subprocess.run([sys.executable, "-m", "pip", "install", *mcp_requirements], check=True)
+          PY
+          python - <<'PY'
+          import subprocess, sys
+          from pathlib import Path
+          wheel = next(Path("candidate-dist").glob("agix-1.11.1-*.whl"))
+          subprocess.run([sys.executable, "-m", "pip", "install", str(wheel) + "[fuzzy,game_theory]"], check=True)
+          subprocess.run([sys.executable, "-m", "pip", "check"], check=True)
+          from importlib.metadata import version
+          import agix
+          assert version("agix") == "1.11.1"
+          assert agix.__version__ == "1.11.1"
+          PY
+      - name: Verify MCP contract and full regression suite
+        id: tests
+        shell: bash
+        run: |
+          python -m pytest tests/test_dependency_contract.py -q
+          python -m pytest tests -q --junitxml=ci-diagnostics/mcp-tests.xml
+          python - <<'PY'
+          from xml.etree import ElementTree
+
+          cases = ElementTree.parse("ci-diagnostics/mcp-tests.xml").findall(".//testcase")
+          passed = sum(not any(case.find(tag) is not None for tag in ("failure", "error", "skipped")) for case in cases)
+          assert len(cases) == passed == 181, f"Expected 181 passed tests, got {passed}/{len(cases)}"
+          PY
+          echo "✅ Candidate AGIX 1.11.1 wheel + MCP suite passed on ${{ matrix.os }} / Python ${{ matrix.python-version }}." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect safe diagnostic report
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p ci-diagnostics
+          python - <<'PY'
+          from hashlib import file_digest
+          import importlib.metadata
+          import pathlib
+          import platform
+          import subprocess
+          import sys
+
+          out = pathlib.Path("ci-diagnostics/report.txt")
+          lines = [
+              f"OS: {platform.platform()}",
+              f"Python: {sys.version}",
+              f"Interpreter: {sys.executable}",
+          ]
+          for package in ("agix", "mcp", "pytest", "numpy", "scipy"):
+              try:
+                  lines.append(f"{package}: {importlib.metadata.version(package)}")
+              except importlib.metadata.PackageNotFoundError:
+                  lines.append(f"{package}: NOT INSTALLED")
+          wheels = sorted(pathlib.Path("candidate-dist").glob("*.whl"))
+          lines.append("Candidate wheels: " + ", ".join(w.name for w in wheels))
+          core = subprocess.run(
+              ["git", "-C", "agix-core", "rev-parse", "HEAD"],
+              capture_output=True, text=True, timeout=30,
+          )
+          lines.append(f"Core commit: {core.stdout.strip() or 'UNAVAILABLE'}")
+          for wheel in wheels:
+              with wheel.open("rb") as stream:
+                  lines.append(f"SHA-256 {wheel.name}: {file_digest(stream, 'sha256').hexdigest()}")
+          result = subprocess.run(
+              [sys.executable, "-m", "pip", "check"],
+              capture_output=True, text=True, timeout=90,
+          )
+          lines.append(f"pip check exit code: {result.returncode}")
+          lines.append("pip check output:\n" + (result.stdout + result.stderr)[:12000])
+          out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          print(out.read_text(encoding="utf-8"))
+          PY
+      - name: Upload diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agix-wheel-diagnostics-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: ci-diagnostics/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Summarize candidate validation
+        if: always()
+        shell: bash
+        run: |
+          echo "### Candidate wheel validation — ${{ matrix.os }} / Python ${{ matrix.python-version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Wheel build: ${{ steps.build.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Installation: ${{ steps.install.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- MCP tests: ${{ steps.tests.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Diagnostic artifact: agix-wheel-diagnostics-${{ matrix.os }}-py${{ matrix.python-version }}" >> "$GITHUB_STEP_SUMMARY"
