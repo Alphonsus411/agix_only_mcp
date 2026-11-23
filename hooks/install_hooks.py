@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-MARKER = "agix_context.py"
+MARKERS = ("agix_context.py", "agix_stop.py")
 
 
 def agix_hooks() -> dict:
@@ -29,21 +29,24 @@ def agix_hooks() -> dict:
         # In CI and editable installs there may be no repository-local venv.
         # Use the interpreter running the installer rather than a missing executable.
         python = Path(sys.executable)
-    script = REPO / "hooks" / "agix_context.py"
+    context = REPO / "hooks" / "agix_context.py"
+    stop = REPO / "hooks" / "agix_stop.py"
 
-    def entry(mode: str) -> dict:
+    def entry(script: Path, mode: str = "", timeout: int = 10) -> dict:
         # Claude Code solo admite una cadena en "command" (no hay campo "args"): todo va en ella,
         # con las rutas entre comillas por si contienen espacios.
-        command = f'"{python.as_posix()}" "{script.as_posix()}" {mode}'
-        return {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
+        command = f'"{python.as_posix()}" "{script.as_posix()}"' + (f" {mode}" if mode else "")
+        return {"hooks": [{"type": "command", "command": command, "timeout": timeout}]}
 
-    return {"SessionStart": entry("session"), "UserPromptSubmit": entry("prompt")}
+    # Stop importa el servidor (numpy + AGIX) para registrar la experiencia: necesita más margen.
+    return {"SessionStart": entry(context, "session"), "UserPromptSubmit": entry(context, "prompt"),
+            "Stop": entry(stop, timeout=30)}
 
 
 def _is_agix(group: dict) -> bool:
     # También reconoce el formato antiguo con "args", para sustituirlo al reinstalar.
-    return any(MARKER in " ".join([h.get("command", "")] + list(h.get("args", [])))
-               for h in group.get("hooks", []))
+    return any(m in " ".join([h.get("command", "")] + list(h.get("args", [])))
+               for h in group.get("hooks", []) for m in MARKERS)
 
 
 def merge(settings: dict, uninstall: bool = False) -> dict:

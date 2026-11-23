@@ -107,3 +107,79 @@ def test_instalador_sustituye_el_formato_antiguo_y_conserva_lo_demas():
     assert inst.merge(json.loads(json.dumps(merged))) == merged  # idempotente
     limpio = inst.merge(merged, uninstall=True)
     assert limpio["hooks"] == {"SessionStart": [ajeno]}
+
+
+# --------------------------------------------------------------------------- hook Stop
+
+STOP = Path(__file__).resolve().parents[1] / "hooks" / "agix_stop.py"
+
+
+def _transcript(tmp: str, tools: list[tuple[str, bool]], texto: str = "He terminado la tarea") -> str:
+    """Transcript mínimo: un prompt, las herramientas (nombre, es_error) y la respuesta final."""
+    rows = [{"type": "user", "message": {"role": "user", "content": "haz algo"}}]
+    for i, (name, error) in enumerate(tools):
+        rows.append({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": f"t{i}", "name": name, "input": {}}]}})
+        rows.append({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": f"t{i}", "content": "x", "is_error": error}]}})
+    rows.append({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": texto}]}})
+    path = Path(tmp) / "transcript.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    return str(path)
+
+
+def _stop(data: str, transcript: str, extra_env: dict | None = None):
+    env = dict(os.environ, AGIX_MCP_DATA=data, **(extra_env or {}))
+    proc = subprocess.run([sys.executable, str(STOP)], input=json.dumps({"transcript_path": transcript}),
+                          capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == ""  # el hook Stop nunca imprime
+    return proc
+
+
+def _diario(data: str) -> list:
+    path = Path(data) / "qualia_estado.json"
+    if not path.exists():
+        return []
+    estado = json.loads(path.read_text(encoding="utf-8"))
+    return [e for e in estado.get("experiencias", []) if e.get("entrada") != "emociones"]
+
+
+def test_stop_registra_turnos_con_cambios():
+    with tempfile.TemporaryDirectory() as data, tempfile.TemporaryDirectory() as tmp:
+        _stop(data, _transcript(tmp, [("Edit", False), ("Bash", False)],
+                                "Listo. password=hunter2 guardado"))
+        diario = json.dumps(_diario(data), ensure_ascii=False)
+        assert "Turno en" in diario and "hunter2" not in diario
+        assert "[REDACTED]" in diario
+
+
+def test_stop_ignora_turnos_de_solo_lectura():
+    with tempfile.TemporaryDirectory() as data, tempfile.TemporaryDirectory() as tmp:
+        _stop(data, _transcript(tmp, [("Read", False), ("Grep", False)]))
+        assert _diario(data) == []
+
+
+def test_stop_limita_la_frecuencia_y_se_puede_desactivar():
+    with tempfile.TemporaryDirectory() as data, tempfile.TemporaryDirectory() as tmp:
+        t = _transcript(tmp, [("Write", False)])
+        _stop(data, t)
+        n = len(_diario(data))
+        assert n >= 1
+        _stop(data, t)  # menos de MIN_INTERVAL después: no registra otra vez
+        assert len(_diario(data)) == n
+        (Path(data) / ".stop_hook.json").unlink()
+        _stop(data, t, {"AGIX_STOP_HOOK": "0"})
+        assert len(_diario(data)) == n
+
+
+def test_stop_con_entrada_rota_no_bloquea():
+    proc = subprocess.run([sys.executable, str(STOP)], input="esto no es json",
+                          capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0 and proc.stdout.strip() == ""
+
+
+def test_instalador_incluye_el_hook_stop():
+    hook = _installer().agix_hooks()["Stop"]["hooks"][0]
+    assert "agix_stop.py" in hook["command"] and hook["timeout"] >= 30
