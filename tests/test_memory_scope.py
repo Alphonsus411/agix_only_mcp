@@ -32,8 +32,28 @@ def _env(tmp_path, **extra):
 # --------------------------------------------------------------------------- resolución
 
 
-def test_sin_marcador_usa_la_global(tmp_path):
-    scope = memory_scope.resolve(_project(tmp_path), _env(tmp_path))
+def test_sin_marcador_aisla_por_proyecto(tmp_path):
+    a = _project(tmp_path)
+    b = tmp_path / "otro"
+    b.mkdir()
+    sa = memory_scope.resolve(a, _env(tmp_path))
+    sb = memory_scope.resolve(b, _env(tmp_path))
+    assert sa.enabled and sa.auto and sa.name.startswith("proyecto-")
+    assert sa.data_dir == tmp_path / "home" / "proyectos" / sa.name
+    assert sa.name != "global" and sa.data_dir != sb.data_dir
+    assert memory_scope.NAME_RE.fullmatch(sa.name)
+
+
+def test_sin_marcador_subcarpetas_del_repo_comparten_memoria(tmp_path):
+    project = _project(tmp_path)
+    (project / ".git").mkdir()
+    env = _env(tmp_path)
+    assert (memory_scope.resolve(project / "src" / "sub", env).data_dir
+            == memory_scope.resolve(project, env).data_dir)
+
+
+def test_sin_marcador_default_global_recupera_el_comportamiento_anterior(tmp_path):
+    scope = memory_scope.resolve(_project(tmp_path), _env(tmp_path, AGIX_MCP_DEFAULT="global"))
     assert scope.name == "global" and scope.data_dir == tmp_path / "home"
 
 
@@ -124,7 +144,8 @@ def test_hook_lee_solo_la_memoria_del_proyecto(tmp_path):
 
     other = tmp_path / "otro"
     other.mkdir()
-    assert "secreto global" in _hook("session", other, env)
+    assert "secreto global" not in (_hook("session", other, env) or "")
+    assert "secreto global" in _hook("session", other, {**env, "AGIX_MCP_DEFAULT": "global"})
 
 
 def test_hook_redacta_credenciales_en_contexto(tmp_path):

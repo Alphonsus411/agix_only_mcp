@@ -8,12 +8,18 @@ Orden de resolución:
        {"memoria": "off"}        -> sin memoria: ni se lee ni se guarda nada
    Si el archivo está roto o el nombre no es válido, la memoria se desactiva: ante la duda,
    es mejor no guardar nada que mezclar proyectos.
-3. Sin archivo: la memoria global (~/.agix-mcp), como hasta ahora.
+3. Sin archivo: memoria propia del proyecto, aislada de las demás. Su nombre sale de la raíz del
+   proyecto (el ancestro más cercano con .git; si no hay, la propia carpeta): `<carpeta>-<hash>`
+   en ~/.agix-mcp/proyectos/. Así dos proyectos nunca comparten memoria sin pedirlo, y cualquier
+   subcarpeta de un mismo repo usa la misma. La memoria global solo se usa si se pide con
+   {"memoria": "global"} o con AGIX_MCP_DEFAULT=global (recupera el comportamiento anterior).
 
+AGIX_MCP_REQUIRE_SCOPE=1 desactiva la memoria si no hay .agix.json, en vez de crear la automática.
 La carpeta base (~/.agix-mcp) se puede cambiar con AGIX_MCP_HOME.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -31,6 +37,7 @@ class Scope:
     source: str               # de dónde sale la decisión
     marker: Path | None = None
     problem: str | None = None
+    auto: bool = False        # memoria propia deducida de la carpeta, sin .agix.json
 
     @property
     def enabled(self) -> bool:
@@ -44,6 +51,8 @@ class Scope:
             return "memoria global de AGIX"
         if self.name == "AGIX_MCP_DATA":
             return f"memoria de AGIX en {self.data_dir} (fijada con AGIX_MCP_DATA)"
+        if self.auto:
+            return f"memoria de AGIX del proyecto «{self.name}» (automática, sin .agix.json)"
         return f"memoria de AGIX del proyecto «{self.name}»"
 
 
@@ -64,6 +73,25 @@ def find_marker(start: Path) -> Path | None:
     return None
 
 
+def project_root(start: Path) -> Path:
+    """Raíz del proyecto: el ancestro más cercano con .git; si no hay, la propia carpeta."""
+    try:
+        start = start.resolve()
+    except OSError:
+        return start
+    for folder in (start, *start.parents):
+        if (folder / ".git").exists():
+            return folder
+    return start
+
+
+def auto_name(root: Path) -> str:
+    """Nombre válido y estable: carpeta en minúsculas + hash corto de la ruta (evita choques)."""
+    slug = re.sub(r"[^a-z0-9_-]+", "-", root.name.lower()).strip("-_")[:40] or "proyecto"
+    digest = hashlib.sha256(str(root).lower().encode("utf-8")).hexdigest()[:6]
+    return f"{slug}-{digest}"
+
+
 def resolve(start: str | Path | None = None, env: dict | None = None) -> Scope:
     env = os.environ if env is None else env
     if env.get("AGIX_MCP_DATA"):
@@ -76,7 +104,11 @@ def resolve(start: str | Path | None = None, env: dict | None = None) -> Scope:
         if env.get("AGIX_MCP_REQUIRE_SCOPE", "").strip().lower() in ("1", "true", "yes", "on"):
             return Scope("off", None, "AGIX_MCP_REQUIRE_SCOPE", None,
                          "sin .agix.json: memoria desactivada por política de aislamiento")
-        return Scope("global", base, "sin .agix.json: memoria global")
+        if env.get("AGIX_MCP_DEFAULT", "").strip().lower() == "global":
+            return Scope("global", base, "sin .agix.json: AGIX_MCP_DEFAULT=global")
+        name = auto_name(project_root(start))
+        return Scope(name, base / "proyectos" / name,
+                     "sin .agix.json: memoria propia de la carpeta del proyecto", auto=True)
 
     def off(problem: str | None) -> Scope:
         return Scope("off", None, str(marker), marker, problem)

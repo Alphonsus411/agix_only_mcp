@@ -731,7 +731,8 @@ def agix_memory_scope() -> dict:
 
     Cada proyecto puede tener memoria propia con un archivo .agix.json en su carpeta (o en una
     superior): {"memoria": "nombre"} usa ~/.agix-mcp/proyectos/nombre, {"memoria": "global"} la
-    global y {"memoria": "off"} ninguna. Sin archivo, la global. AGIX_MCP_DATA manda sobre todo.
+    global y {"memoria": "off"} ninguna. Sin archivo, memoria propia de la raíz del proyecto
+    (carpeta con .git) en ~/.agix-mcp/proyectos/. AGIX_MCP_DATA manda sobre todo.
     """
     backups = DATA_DIR / storage.BACKUP_DIR
     return {
