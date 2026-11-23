@@ -73,15 +73,22 @@ def _unlock(fh) -> None:
 
 @contextmanager
 def lock(data_dir: Path, timeout: float = LOCK_TIMEOUT):
-    """Bloqueo exclusivo de la carpeta de datos entre procesos; reentrante en el mismo hilo."""
+    """Bloqueo exclusivo de una carpeta de datos entre procesos; reentrante por carpeta en el hilo.
+
+    Cada carpeta tiene su propio bloqueo: tomar el de la memoria del proyecto y, dentro, el de
+    la Qualia global bloquea las dos. Orden fijo para no provocar interbloqueos: proyecto y
+    después Qualia, nunca al revés."""
     with _rlock:
-        depth = getattr(_local, "depth", 0)
-        if depth:
-            _local.depth = depth + 1
+        held = getattr(_local, "held", None)
+        if held is None:
+            held = _local.held = {}
+        key = os.path.normcase(str(Path(data_dir).resolve()))
+        if held.get(key):
+            held[key] += 1
             try:
                 yield
             finally:
-                _local.depth -= 1
+                held[key] -= 1
             return
         path = Path(data_dir) / LOCK_FILE
         fh = open(path, "a+b")
@@ -91,11 +98,11 @@ def lock(data_dir: Path, timeout: float = LOCK_TIMEOUT):
                 if time.monotonic() > deadline:
                     raise StorageBusy("La memoria de AGIX está ocupada por otra sesión; reinténtalo")
                 time.sleep(0.05)
-            _local.depth = 1
+            held[key] = 1
             try:
                 yield
             finally:
-                _local.depth = 0
+                held[key] = 0
                 _unlock(fh)
         finally:
             fh.close()

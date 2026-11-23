@@ -14,6 +14,9 @@ Orden de resolución:
    subcarpeta de un mismo repo usa la misma. La memoria global solo se usa si se pide con
    {"memoria": "global"} o con AGIX_MCP_DEFAULT=global (recupera el comportamiento anterior).
 
+El espíritu Qualia no es por proyecto: es uno solo para todo el PC, en ~/.agix-mcp/qualia
+(qualia_dir). Los episodios, decisiones y autonarrativa siguen aislados por proyecto.
+
 AGIX_MCP_REQUIRE_SCOPE=1 desactiva la memoria si no hay .agix.json, en vez de crear la automática.
 La carpeta base (~/.agix-mcp) se puede cambiar con AGIX_MCP_HOME.
 """
@@ -59,6 +62,22 @@ class Scope:
 def base_dir(env: dict | None = None) -> Path:
     env = os.environ if env is None else env
     return Path(env.get("AGIX_MCP_HOME") or Path.home() / ".agix-mcp")
+
+
+QUALIA_SUBDIR = "qualia"
+QUALIA_FILES = ("qualia_estado.json", "qualia_modelos.json", "qualia_config.json")
+
+
+def qualia_dir(scope: Scope, env: dict | None = None) -> Path | None:
+    """Carpeta del espíritu Qualia: una sola, global para todo el PC (~/.agix-mcp/qualia), sea cual
+    sea la memoria del proyecto. Excepciones: AGIX_MCP_DATA la deja junto a los datos (tests y uso
+    explícito) y, con la memoria desactivada, no hay carpeta (None: nada se lee ni se guarda)."""
+    env = os.environ if env is None else env
+    if env.get("AGIX_MCP_DATA"):
+        return scope.data_dir
+    if not scope.enabled:
+        return None
+    return base_dir(env) / QUALIA_SUBDIR
 
 
 def find_marker(start: Path) -> Path | None:

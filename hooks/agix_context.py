@@ -28,6 +28,7 @@ import memory_scope  # noqa: E402
 # Se fija en main() según el proyecto de la sesión (cwd del evento); por defecto, la global.
 DATA_DIR = Path(os.environ.get("AGIX_MCP_DATA") or memory_scope.base_dir())
 SCOPE: memory_scope.Scope | None = None
+QUALIA_DIR: Path | None = None  # carpeta de la Qualia global; se fija en main()
 MAX_CHARS = 1500
 STOPWORDS = {
     "para", "pero", "como", "esto", "esta", "este", "estos", "estas", "porque", "cuando", "donde",
@@ -109,7 +110,12 @@ def _is_review_summary(meta: dict) -> bool:
 
 
 def _qualia_tone() -> tuple[str | None, dict]:
-    state = _json("qualia_estado.json") or {}
+    # Qualia es global para todo el PC: se lee de su carpeta, no de la del proyecto.
+    path = (QUALIA_DIR or DATA_DIR) / "qualia_estado.json"
+    try:
+        state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except Exception:
+        state = {}
     for exp in state.get("experiencias", []):
         if exp.get("entrada") == "emociones":
             try:
@@ -289,9 +295,10 @@ def main(argv: list[str]) -> int:
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
-    global DATA_DIR, SCOPE
+    global DATA_DIR, SCOPE, QUALIA_DIR
     try:
         SCOPE = memory_scope.resolve(payload.get("cwd") or None)
+        QUALIA_DIR = memory_scope.qualia_dir(SCOPE)
     except Exception:
         return 0
     if not SCOPE.enabled:

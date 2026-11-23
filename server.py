@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import warnings
 from difflib import SequenceMatcher
@@ -123,7 +124,9 @@ Herramientas de AGIX (framework de Adolfo González) para apoyar el razonamiento
 - agix_emotion_update: cálculo puntual de un estado PAD.
 - agix_qualia_experience / _state / _configure: espíritu Qualia persistente entre sesiones, con
   personalidad, atenuación, plasticidad hebbiana, RNN que predice el siguiente estado y modos
-  (euforia/desconexión).
+  (euforia/desconexión). Es uno solo para todo el PC, compartido por todos los proyectos
+  (~/.agix-mcp/qualia); el resto de la memoria sigue aislada por proyecto. Un reset de Qualia
+  afecta a todos los proyectos.
 - agix_cognitive_cycle: ciclo completo percepción → emoción → ética → control → reflexión;
   aborta acciones con ética < 0.6 (con veto por daño y penalización por riesgo).
 - agix_aesthetic_decide: elegir entre opciones por armonía; agix_dream_record / agix_dreams_recent:
@@ -366,10 +369,40 @@ except Exception as exc:
 _seen[ONTOLOGY_FILE] = storage.mtime(ONTOLOGY_FILE)
 
 # --- Espíritu Qualia persistente --------------------------------------------
-QUALIA_CONFIG = DATA_DIR / "qualia_config.json"
-QUALIA_STATE = "qualia_estado.json"  # relativo al cwd (DATA_DIR): EpisodicMemory exige rutas dentro del cwd
-QUALIA_MODELS = DATA_DIR / "qualia_modelos.json"
+# Qualia es única para todo el PC (memory_scope.qualia_dir): vive fuera de la carpeta del proyecto
+# y todas las sesiones, de cualquier proyecto, leen y escriben el mismo estado con su propio
+# bloqueo. Con la memoria desactivada se usa la carpeta temporal de la sesión.
+_qdir = memory_scope.qualia_dir(SCOPE)
+QUALIA_DIR = _qdir.resolve() if _qdir is not None else DATA_DIR
+QUALIA_SHARED = QUALIA_DIR != DATA_DIR
+QUALIA_DIR.mkdir(parents=True, exist_ok=True)
+QUALIA_CONFIG = QUALIA_DIR / "qualia_config.json"
+QUALIA_STATE = "qualia_estado.json"
+QUALIA_STATE_PATH = QUALIA_DIR / QUALIA_STATE
+QUALIA_MODELS = QUALIA_DIR / "qualia_modelos.json"
 DREAMS_FILE = "suenos.json"
+
+
+def _qualia_tmp() -> str:
+    """Archivo temporal en DATA_DIR (el cwd): guardar_estado/cargar_estado exigen rutas dentro del cwd."""
+    return f"qualia_estado.{os.getpid()}.tmp"
+
+
+def _seed_qualia() -> None:
+    """Primera vez con la Qualia global: se parte de la que había en la raíz de la memoria global."""
+    if not QUALIA_SHARED:
+        return
+    with storage.lock(QUALIA_DIR):
+        if not QUALIA_STATE_PATH.exists():
+            legacy = memory_scope.base_dir()
+            for name in memory_scope.QUALIA_FILES:
+                src, dst = legacy / name, QUALIA_DIR / name
+                if src.is_file() and not dst.exists():
+                    shutil.copy2(src, dst)
+        storage.daily_backup(QUALIA_DIR)
+
+
+_seed_qualia()
 
 DEFAULT_QUALIA_CONFIG = {
     "nombre": "Claude",
@@ -498,34 +531,54 @@ def _load_models(sp: QualiaSpirit) -> None:
 
 
 def _save_spirit() -> None:
+    """Guarda la Qualia en la carpeta global. Se llama con el bloqueo de QUALIA_DIR tomado."""
+    tmp = _qualia_tmp()
     try:
-        # AGIX escribe directamente sobre el archivo: se le hace escribir un temporal y se
-        # sustituye de golpe, para que un corte no deje el estado a medias.
-        tmp = f"{QUALIA_STATE}.{os.getpid()}.tmp"
+        # AGIX escribe directamente sobre el archivo: se le hace escribir un temporal (en el cwd)
+        # y se sustituye de golpe en su sitio, para que un corte no deje el estado a medias.
         with _quiet():
             _spirit.guardar_estado(tmp)
-        storage.write_text(DATA_DIR / QUALIA_STATE, (DATA_DIR / tmp).read_text(encoding="utf-8"))
-        (DATA_DIR / tmp).unlink(missing_ok=True)
+        storage.write_text(QUALIA_STATE_PATH, (DATA_DIR / tmp).read_text(encoding="utf-8"))
         _save_models(_spirit)
+        _seen[QUALIA_STATE_PATH] = storage.mtime(QUALIA_STATE_PATH)
     except Exception as exc:  # la persistencia no debe romper la herramienta
         log.warning("No se pudo guardar el estado de Qualia: %s", exc)
+    finally:
+        (DATA_DIR / tmp).unlink(missing_ok=True)
 
 
 def _load_spirit() -> QualiaSpirit:
     cfg = _load_qualia_config()
     sp = _new_spirit(cfg)
-    if Path(QUALIA_STATE).exists() and storage.read_json(DATA_DIR / QUALIA_STATE) is not None:
+    if storage.read_json(QUALIA_STATE_PATH) is not None:
+        tmp = _qualia_tmp()
         try:
+            (DATA_DIR / tmp).write_text(QUALIA_STATE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
             with _quiet():
-                sp.cargar_estado(QUALIA_STATE)
+                sp.cargar_estado(tmp)
             _load_models(sp)
         except Exception as exc:
             log.warning("No se pudo restaurar el estado de Qualia: %s", exc)
+        finally:
+            (DATA_DIR / tmp).unlink(missing_ok=True)
     return sp
 
 
 _spirit = _load_spirit()
+_seen[QUALIA_STATE_PATH] = storage.mtime(QUALIA_STATE_PATH)
 _meta = DynamicMetaEvaluator(spirit=_spirit)
+
+
+def _sync_qualia() -> None:
+    """Recarga la Qualia si otra sesión (de este u otro proyecto) la ha guardado desde la última vez.
+    Hay un solo estado de ánimo para todo el PC: se lee y escribe con el bloqueo de QUALIA_DIR."""
+    global _spirit
+    with storage.lock(QUALIA_DIR):
+        current = storage.mtime(QUALIA_STATE_PATH)
+        if current != _seen.get(QUALIA_STATE_PATH):
+            _spirit = _load_spirit()
+            _meta.spirit = _spirit
+            _seen[QUALIA_STATE_PATH] = current
 _goals = GoalEngine()
 _dreams = DreamBank()
 DREAMS_PATH = DATA_DIR / DREAMS_FILE
@@ -743,6 +796,7 @@ def agix_memory_scope() -> dict:
         "decided_by": SCOPE.source,
         "problem": SCOPE.problem,
         "project_dir": START_DIR,
+        "qualia": {"shared": QUALIA_SHARED, "dir": str(QUALIA_DIR) if SCOPE.enabled else None},
         "backups": sorted(d.name for d in backups.iterdir() if d.is_dir()) if backups.exists() else [],
         "storage_problems": list(storage.problems),
     }
@@ -1834,11 +1888,13 @@ def agix_qualia_experience(event: str, charge: float, emotion: str) -> dict:
     Aplica atenuación de emociones previas, plasticidad hebbiana y entrena online la RNN emocional.
     El estado se guarda en disco y sobrevive a reinicios.
     """
-    with _quiet():
-        _spirit.experimentar(event, float(charge), emotion)
-        reflection = _spirit.reflexionar()
-        prediction = _spirit.predecir_futuro()
-    _save_spirit()
+    with storage.lock(QUALIA_DIR):  # leer, vivir la experiencia y guardar sin que otra sesión se cuele
+        _sync_qualia()
+        with _quiet():
+            _spirit.experimentar(event, float(charge), emotion)
+            reflection = _spirit.reflexionar()
+            prediction = _spirit.predecir_futuro()
+        _save_spirit()
     balance, arousal = affect_balance(_spirit.estado_emocional.emociones)
     return _plain({"reflection": reflection, "emotions": _spirit.estado_emocional.emociones,
                    "tone": _spirit.estado_emocional.tono_general(), "mode": _mode(_spirit),
@@ -1897,7 +1953,14 @@ def agix_qualia_configure(
     name, optimism, introversion, energy (0..1): identidad y personalidad; solo se aplican al
         renacer el espíritu, así que requieren reset=True.
     reset: borra emociones, diario y modelos aprendidos y crea un espíritu nuevo con la configuración.
+        Qualia es global: el reset y los cambios de configuración afectan a todos los proyectos.
     """
+    with storage.lock(QUALIA_DIR):
+        _sync_qualia()
+        return _qualia_configure(decay, plasticity, name, optimism, introversion, energy, reset, modes)
+
+
+def _qualia_configure(decay, plasticity, name, optimism, introversion, energy, reset, modes) -> dict:
     global _spirit
     cfg = _load_qualia_config()
     if decay is not None:
@@ -1918,10 +1981,10 @@ def agix_qualia_configure(
     if identity and not reset:
         raise ValueError("Cambiar nombre o personalidad requiere reset=True (crea un espíritu nuevo)")
     cfg.update(identity)
-    QUALIA_CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    storage.write_json(QUALIA_CONFIG, cfg)
 
     if reset:
-        for f in (Path(QUALIA_STATE), QUALIA_MODELS):
+        for f in (QUALIA_STATE_PATH, QUALIA_MODELS):
             f.unlink(missing_ok=True)
         _spirit = _new_spirit(cfg)
         _meta.spirit = _spirit
@@ -2069,11 +2132,12 @@ def _sync() -> None:
     tomado, antes de cada herramienta). Como toda escritura ocurre con el bloqueo y justo después
     de un _sync, el disco tiene siempre lo de esta sesión más lo de las demás: basta recargar.
 
-    El espíritu Qualia y la autonarrativa no se recargan: Qualia es un único estado de ánimo
-    (gana la última sesión que lo guarde) y la autonarrativa es SQLite, que ya admite varias
-    sesiones (su modelo de sí mismo se reconstruye al arrancar).
+    La autonarrativa no se recarga: es SQLite, que ya admite varias sesiones (su modelo de sí
+    mismo se reconstruye al arrancar). La Qualia sí, aparte: es global para todo el PC y la
+    comparten todos los proyectos (_sync_qualia, con el bloqueo de su propia carpeta).
     """
     global _identity, _cur
+    _sync_qualia()
     reloads = {
         MEMORY_PATH: _load_memory,
         METACOG_FILE: _load_metacog,
