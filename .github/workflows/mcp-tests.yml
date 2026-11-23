@@ -32,41 +32,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pytest
-      - name: Apply reviewed AGIX source patch in isolated CI environment
-        shell: bash
-        run: |
-          python - <<'PY'
-          import importlib.util
-          import pathlib
-          import subprocess
-
-          spec = importlib.util.find_spec("agix")
-          if spec is None or not spec.submodule_search_locations:
-              raise SystemExit("AGIX no está instalado")
-          package_dir = pathlib.Path(next(iter(spec.submodule_search_locations)))
-          site_packages = package_dir.parent
-          patch = pathlib.Path("patches/qualia-fixes.patch").resolve()
-          # El parche usa rutas a/src/agix/...; -p2 las convierte en agix/...
-          cmd = ["git", "apply", "-p2", "--check", str(patch)]
-          import hashlib
-          for relative in ("qualia/neuro_plastic.py", "qualia/spirit.py"):
-              data = (package_dir / relative).read_bytes()
-              print(f"AGIX {relative}: sha256={hashlib.sha256(data).hexdigest()} bytes={len(data)}")
-          # git apply interpreta los finales de línea del parche de manera
-          # distinta en los runners. Normalizamos a LF en una copia temporal.
-          import tempfile
-          patch_bytes = patch.read_bytes().replace(b"\r\n", b"\n")
-          with tempfile.TemporaryDirectory() as tmp:
-              normalized_patch = pathlib.Path(tmp) / "qualia-fixes.patch"
-              normalized_patch.write_bytes(patch_bytes)
-              subprocess.run(["git", "apply", "-p2", "--check",
-                              "--ignore-space-change", str(normalized_patch)],
-                             cwd=site_packages, check=True)
-              subprocess.run(["git", "apply", "-p2",
-                              "--ignore-space-change", str(normalized_patch)],
-                             cwd=site_packages, check=True)
-          print(f"AGIX CI patch applied to {package_dir}")
-          PY
+      # AGIX 1.11.1 ya incluye las correcciones de Qualia, por lo que no se
+      # parchea el paquete instalado. Si requirements.txt vuelve a fijar una
+      # versión sin ellas, el contrato siguiente falla con un mensaje claro.
       - name: Verify AGIX dependency contract
         run: python -m pytest tests/test_dependency_contract.py -q
       - name: Run regression suite
